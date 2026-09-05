@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-storyweave}
+      POSTGRES_USER: ${POSTGRES_USER:-storyweave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - storyweave-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://storyweave:change-me@postgres:5432/storyweave}
+      BACKEND_HOST: ${BACKEND_HOST:-0.0.0.0}
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      SEED_ENABLED: ${SEED_ENABLED:-false}
+      URL_FETCH_ALLOWED_HOSTS: ${URL_FETCH_ALLOWED_HOSTS:-}
+      URL_FETCH_TIMEOUT_SECONDS: ${URL_FETCH_TIMEOUT_SECONDS:-10}
+      URL_FETCH_MAX_BYTES: ${URL_FETCH_MAX_BYTES:-2000000}
+      WEB_RETRIEVAL_PROVIDER: ${WEB_RETRIEVAL_PROVIDER:-auto}
+      MCP_SEARCH_COMMAND: ${MCP_SEARCH_COMMAND:-/usr/local/bin/python}
+      MCP_SEARCH_SERVER_PATH: ${MCP_SEARCH_SERVER_PATH:-/opt/mcp-searxng/server.py}
+      MCP_SEARCH_TIMEOUT_SECONDS: ${MCP_SEARCH_TIMEOUT_SECONDS:-20}
+      MCP_FETCH_MAX_CHARS: ${MCP_FETCH_MAX_CHARS:-8000}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-180}
+    volumes:
+      - ./mcp-searxng:/opt/mcp-searxng:ro
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api}
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  storyweave-postgres:
