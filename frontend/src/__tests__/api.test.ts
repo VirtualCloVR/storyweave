@@ -35,4 +35,19 @@ describe('chat API', () => {
     const message = await createApiClient(fetcher).sendChat('session-1', 'テスト')
     expect(message.sources).toHaveLength(1)
   })
+
+  it('preserves generation metadata from message history', async () => {
+    const fetcher: typeof fetch = async () => new Response(JSON.stringify([{ id: 'partial-1', role: 'assistant', content: '途中', metadataJson: { generation_status: 'interrupted' } }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const messages = await createApiClient(fetcher).listMessages('session-1')
+    expect(messages[0].metadata?.generation_status).toBe('interrupted')
+  })
+
+  it('returns the persisted partial message when SSE reports interruption', async () => {
+    const fetcher: typeof fetch = async () => new Response([
+      'data: {"token":"途中"}\n\n',
+      'event: error\n',
+      'data: {"content":"失敗","message":{"id":"partial-1","role":"assistant","content":"途中","metadataJson":{"generation_status":"interrupted"}}}\n\n',
+    ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    await expect(createApiClient(fetcher).sendChat('session-1', 'テスト')).rejects.toMatchObject({ name: 'ChatStreamInterruptedError', partialMessage: { id: 'partial-1', content: '途中' } })
+  })
 })

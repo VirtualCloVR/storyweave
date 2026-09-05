@@ -47,7 +47,7 @@ class Thread(TimestampMixin, Base):
 
 class StorySession(TimestampMixin, Base):
     __tablename__ = "sessions"
-    __table_args__ = (CheckConstraint("status IN ('considering','adopted','rejected','superseded')", name="ck_session_status"),)
+    __table_args__ = (CheckConstraint("status IN ('considering','adopted','rejected','superseded')", name="ck_session_status"), CheckConstraint("status != 'adopted' OR (adoption_summary IS NOT NULL AND length(trim(adoption_summary)) > 0)", name="ck_adopted_requires_summary"))
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(240))

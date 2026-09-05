@@ -1,4 +1,4 @@
-import type { ApiClient, CreateInput, Message, Project, SearchResult, Session, Source, Thread } from './types'
+import type { ApiClient, ContextInspectorData, HealthStatus, Message, Project, SearchResult, Session, Source, Thread } from './types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api'
 
@@ -28,12 +28,21 @@ function messageFromPayload(payload: unknown, sessionId: string): Message {
   const root = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>
   const nested = root.message && typeof root.message === 'object' ? root.message as Record<string, unknown> : root
   const sources = sourceList(nested.sources ?? nested.references ?? root.sources ?? root.references)
-  return { id: typeof nested.id === 'string' ? nested.id : `message-${Date.now()}`, sessionId, role: nested.role === 'user' ? 'user' : 'assistant', content: typeof nested.content === 'string' ? nested.content : typeof nested.text === 'string' ? nested.text : '', model: typeof nested.model === 'string' ? nested.model : null, createdAt: typeof nested.created_at === 'string' ? nested.created_at : typeof nested.createdAt === 'string' ? nested.createdAt : new Date().toISOString(), ...(sources.length ? { sources } : {}) }
+  const rawMetadata = nested.metadata ?? nested.metadataJson ?? nested.metadata_json
+  const metadata = rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata) ? rawMetadata as Record<string, unknown> : null
+  return { id: typeof nested.id === 'string' ? nested.id : `message-${Date.now()}`, sessionId, role: nested.role === 'user' ? 'user' : 'assistant', content: typeof nested.content === 'string' ? nested.content : typeof nested.text === 'string' ? nested.text : '', model: typeof nested.model === 'string' ? nested.model : null, createdAt: typeof nested.created_at === 'string' ? nested.created_at : typeof nested.createdAt === 'string' ? nested.createdAt : new Date().toISOString(), ...(metadata ? { metadata } : {}), ...(sources.length ? { sources } : {}) }
 }
 
 function uniqueSources(values: Source[]): Source[] {
   const seen = new Set<string>()
   return values.filter((source) => { const key = source.id ?? source.url; if (seen.has(key)) return false; seen.add(key); return true })
+}
+
+export class ChatStreamInterruptedError extends Error {
+  constructor(message: string, readonly partialMessage: Message) {
+    super(message)
+    this.name = 'ChatStreamInterruptedError'
+  }
 }
 
 export function createApiClient(fetcher = fetch): ApiClient {
@@ -43,6 +52,7 @@ export function createApiClient(fetcher = fetch): ApiClient {
     return response.json() as Promise<T>
   }
   return {
+    getHealth: () => get<HealthStatus>('/health'),
     listProjects: () => get<Project[]>('/projects'),
     createProject: (input) => request<Project>(fetcher, '/projects', json(input)),
     listThreads: (projectId) => get<Thread[]>(`/projects/${projectId}/threads`),
@@ -66,6 +76,7 @@ export function createApiClient(fetcher = fetch): ApiClient {
       let buffer = ''
       const sources: Source[] = []
       let finalMessage: Message | undefined
+      let sawDone = false
       while (true) {
         const { value, done } = await reader.read()
         if (done) break
@@ -75,10 +86,14 @@ export function createApiClient(fetcher = fetch): ApiClient {
         for (const event of events) {
           const eventName = event.split('\n').find((line) => line.startsWith('event:'))?.slice(6).trim()
           const data = event.split('\n').find((line) => line.startsWith('data:'))?.slice(5).trim()
-          if (!data || data === '[DONE]') continue
+          if (!data) continue
+          if (data === '[DONE]') { sawDone = true; continue }
           if (event.split('\n').some((line) => line.trim() === 'event: error')) {
-            const detail = (() => { try { return (JSON.parse(data) as { content?: string }).content } catch { return undefined } })()
-            throw new Error(detail ?? 'LLM streaming failed')
+            const errorPayload = (() => { try { return JSON.parse(data) as Record<string, unknown> } catch { return {} } })()
+            const partial = errorPayload.message
+              ? messageFromPayload(errorPayload, sessionId)
+              : { id: `interrupted-${Date.now()}`, sessionId, role: 'assistant' as const, content: aggregate, createdAt: new Date().toISOString(), metadata: { generation_status: 'interrupted' }, ...(sources.length ? { sources: uniqueSources(sources) } : {}) }
+            throw new ChatStreamInterruptedError(typeof errorPayload.content === 'string' ? errorPayload.content : 'LLM streaming failed', partial)
           }
           const parsed = (() => { try { return JSON.parse(data) as unknown } catch { return null } })()
           const parsedRecord = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
@@ -100,10 +115,14 @@ export function createApiClient(fetcher = fetch): ApiClient {
         }
       }
       if (finalMessage) return { ...finalMessage, ...((finalMessage.sources?.length || sources.length) ? { sources: uniqueSources([...(finalMessage.sources ?? []), ...sources]) } : {}) }
+      if (!sawDone) {
+        throw new ChatStreamInterruptedError('LLM streaming was interrupted', { id: `interrupted-${Date.now()}`, sessionId, role: 'assistant', content: aggregate, createdAt: new Date().toISOString(), metadata: { generation_status: 'interrupted' }, ...(sources.length ? { sources: uniqueSources(sources) } : {}) })
+      }
       return { id: `stream-${Date.now()}`, sessionId, role: 'assistant', content: aggregate, createdAt: new Date().toISOString(), ...(sources.length ? { sources: uniqueSources(sources) } : {}) }
     },
     generateSummary: (sessionId) => request<{ summary: string }>(fetcher, `/sessions/${sessionId}/summary`, json({})),
     saveSummary: (sessionId, summary) => request<Session>(fetcher, `/sessions/${sessionId}/summary`, { method: 'PUT', body: JSON.stringify({ summary }) }),
+    getContext: (sessionId) => get<ContextInspectorData>(`/sessions/${sessionId}/context`),
     search: (query, filters = {}) => get<SearchResult[]>(`/search?q=${encodeURIComponent(query)}&${new URLSearchParams(filters)}`),
   }
 }

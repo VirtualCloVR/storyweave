@@ -55,6 +55,30 @@ export interface Message {
   metadata?: Record<string, unknown> | null
 }
 
+export interface HealthStatus {
+  status: 'ok' | 'degraded'
+  database: 'ok' | 'unavailable'
+  llm: 'ok' | 'unavailable'
+  model: string
+}
+
+export interface ContextSession {
+  id: string
+  title: string
+  summary: string
+  archived: boolean
+}
+
+export interface ContextInspectorData {
+  project: Project
+  thread: Thread
+  currentSession: Session
+  adoptedSessions: ContextSession[]
+  excludedCounts: Record<'considering' | 'rejected' | 'superseded', number>
+  confirmedContextChars: number
+  currentHistoryChars: number
+}
+
 export interface SearchResult {
   id: string
   type: 'project' | 'thread' | 'session' | 'message'
@@ -73,6 +97,7 @@ export interface CreateInput {
 }
 
 export interface ApiClient {
+  getHealth(): Promise<HealthStatus>
   listProjects(): Promise<Project[]>
   createProject(input: CreateInput): Promise<Project>
   listThreads(projectId: string): Promise<Thread[]>
@@ -84,5 +109,6 @@ export interface ApiClient {
   sendChat(sessionId: string, content: string, onToken?: (token: string) => void): Promise<Message>
   generateSummary(sessionId: string): Promise<{ summary: string }>
   saveSummary(sessionId: string, summary: string): Promise<Session>
+  getContext(sessionId: string): Promise<ContextInspectorData>
   search(query: string, filters?: Record<string, string>): Promise<SearchResult[]>
 }

@@ -35,7 +35,7 @@ BackendがProject、Thread、Session、Message、Sourceを永続化します。F
 .
 ├── backend/              # FastAPI、models、API、Context Builder、tests
 ├── frontend/             # React / TypeScript / Vite UI
-├── compose.yaml          # 開発用 frontend / backend / postgres
+├── compose.yaml          # 本番相当 frontend(nginx) / backend / postgres
 ├── .env.example          # 環境変数のひな型（秘密情報なし）
 ├── Makefile              # WSLでの短縮コマンド
 └── README.md
@@ -54,8 +54,8 @@ v0.1ではベクトルDB、embedding、複雑なAgent Frameworkは導入して�
 | `OPENAI_API_KEY` | APIキー（ローカルサーバーでは任意） | `local-dev` |
 | `OPENAI_MODEL` | 利用モデル名 | `qwen3.8:27b` |
 | `BACKEND_HOST` / `BACKEND_PORT` | Backendのbind先 | `0.0.0.0` / `8000` |
-| `FRONTEND_HOST` / `FRONTEND_PORT` | Viteのbind先 | `0.0.0.0` / `5173` |
-| `VITE_API_BASE_URL` | ブラウザから到達するAPI URL | `http://localhost:8000/api` |
+| `FRONTEND_HOST` / `FRONTEND_PORT` | Frontendのbind先 / Compose公開ポート | `0.0.0.0` / `8080` |
+| `VITE_API_BASE_URL` | ブラウザから到達するAPI URL（Composeでは同一オリジン） | `/api` |
 | `CORS_ORIGINS` | 許可するFrontend origin（カンマ区切り） | `http://localhost:5173` |
 | `SEED_ENABLED` | Development seedを有効化 | `false` |
 | `URL_FETCH_ALLOWED_HOSTS` | URL fetch許可先。空の場合もpublic IPだけを許可 |  |
@@ -64,6 +64,7 @@ v0.1ではベクトルDB、embedding、複雑なAgent Frameworkは導入して�
 | `MCP_SEARCH_SERVER_PATH` | stdio MCPサーバのコンテナ内パス | `/opt/mcp-searxng/server.py` |
 | `MCP_FETCH_MAX_CHARS` | `fetch_page`から受け取る本文の上限 | `8000` |
 | `LLM_TIMEOUT_SECONDS` | ローカルLLMの生成timeout | `180` |
+| `SEARXNG_URL` | Backendから到達するSearXNGのベースURL | `http://host.docker.internal:8080` |
 
 ## PostgreSQL起動
 
@@ -117,7 +118,7 @@ FrontendのAPI向けURLなど、ブラウザへ公開してよい設定だけを
 
 ## Docker Compose起動
 
-`compose.yaml`は`frontend`、`backend`、`postgres`の開発構成です。LLMサーバーはCompose外部にある前提です。
+`compose.yaml`は`frontend`（nginx静的配信）、`backend`、`postgres`の本番相当構成です。Frontendの既定公開ポートは`8080`で、ブラウザの`/api`をnginxがBackendへリバースプロキシします。LLMサーバーとSearXNGはCompose外部のサービスを指定できます（`SEARXNG_URL`）。
 
 ```bash
 cp .env.example .env
@@ -125,6 +126,8 @@ docker compose up -d --build
 docker compose ps
 docker compose logs -f backend
 ```
+
+開発中にViteを使う場合は、Frontendディレクトリで`npm run dev -- --host 0.0.0.0 --port 5173`を実行します。既定の`/api`はVite proxyが`http://localhost:8000`へ転送します。別のBackendを使う場合だけ`VITE_API_BASE_URL`で上書きしてください。Composeのnginx構成は常に同一オリジンの`/api`を使います。
 
 停止する場合は次を実行します。データを残すため、通常の停止ではvolumeを削除しません。
 

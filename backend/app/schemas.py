@@ -64,6 +64,21 @@ class SessionOut(ApiModel):
     updated_at: datetime
     message_count: int = 0
 
+class ContextSessionOut(ApiModel):
+    id: str
+    title: str
+    summary: str
+    archived: bool
+
+class ContextInspectorOut(ApiModel):
+    project: ProjectOut
+    thread: ThreadOut
+    current_session: SessionOut
+    adopted_sessions: list[ContextSessionOut]
+    excluded_counts: dict[str, int]
+    confirmed_context_chars: int
+    current_history_chars: int
+
 class MessageCreate(ApiModel):
     role: MessageRole
     content: str = Field(min_length=1)

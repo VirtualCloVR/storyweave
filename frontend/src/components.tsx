@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspace } from './WorkspaceContext'
 import { ArchiveIcon, ChevronIcon, CheckIcon, CloseIcon, MenuIcon, PinIcon, PlusIcon, SearchIcon, SendIcon, SparkleIcon, SunIcon } from './icons'
 import { Markdown } from './Markdown'
+import { ContextInspector } from './ContextInspector'
 import { createApiClient } from './api'
-import type { Message, SearchResult, Session, SessionStatus, Source } from './types'
+import type { ContextInspectorData, Message, SearchResult, Session, SessionStatus, Source } from './types'
 
 const statusMeta: Record<SessionStatus, { icon: string; label: string; className: string }> = {
   adopted: { icon: '✓', label: '採用', className: 'status-adopted' },
@@ -43,7 +44,7 @@ export function Topbar({ onMenu, onSearch, onTheme }: { onMenu: () => void; onSe
 function AddButton({ label, onClick }: { label: string; onClick: () => void }) { return <button className="text-button" onClick={onClick}><PlusIcon size={15} />{label}</button> }
 
 export function ProjectRail({ onCreateProject, onCreateThread }: { onCreateProject: () => void; onCreateThread: () => void }) {
-  const { projects, threads, selectedProject, selectedThread, selectProject, selectThread, connectionError } = useWorkspace()
+  const { projects, threads, selectedProject, selectedThread, selectProject, selectThread, health, connectionError } = useWorkspace()
   const projectThreads = threads.filter((item) => item.projectId === selectedProject?.id)
   return <aside className="project-rail panel-scroll">
     <div className="rail-heading"><span>WORKSPACE</span><button className="mini-button" aria-label="プロジェクトを追加" onClick={onCreateProject}><PlusIcon size={15} /></button></div>
@@ -51,7 +52,7 @@ export function ProjectRail({ onCreateProject, onCreateThread }: { onCreateProje
     <div className="rail-divider" />
     <div className="rail-heading"><span>THREADS</span><button className="mini-button" aria-label="スレッドを追加" onClick={onCreateThread}><PlusIcon size={15} /></button></div>
     <div className="thread-list">{projectThreads.map((thread) => <button key={thread.id} className={`thread-item ${thread.id === selectedThread?.id ? 'selected' : ''}`} onClick={() => selectThread(thread.id)}><span className="thread-icon">◌</span><span>{thread.title}</span></button>)}</div>
-    <div className={`rail-footer ${connectionError ? 'connection-error' : ''}`} title={connectionError}><span className="connection-dot" /><span>{connectionError ? 'Backend再接続中' : 'ローカルワークスペース'}</span></div>
+    <div className={`rail-footer ${connectionError || health?.database === 'unavailable' ? 'connection-error' : ''}`} title={connectionError ?? `Database: ${health?.database ?? 'checking'} / LLM: ${health?.llm ?? 'checking'}`}><span className="connection-dot" /><span>{connectionError ? 'Backend再接続中' : health ? `${health.model || 'LLM未設定'} ${health.llm === 'ok' ? '●' : '○'}` : '状態を確認中'}</span></div>
   </aside>
 }
 
@@ -78,28 +79,47 @@ export function SessionRail({ onCreateSession }: { onCreateSession: () => void }
 }
 
 export function ChatPanel({ onMenu }: { onMenu: () => void }) {
-  const { selectedSession, messages, updateSession, sendMessage, generateSummary, saveSummary, connectionError } = useWorkspace()
+  const { selectedSession, messages, updateSession, sendMessage, generateSummary, saveSummary, loadContext, connectionError } = useWorkspace()
   const [draft, setDraft] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [summaryDraft, setSummaryDraft] = useState('')
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [contextData, setContextData] = useState<ContextInspectorData>()
+  const [contextLoading, setContextLoading] = useState(false)
+  const [contextError, setContextError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   useEffect(() => { bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' }) }, [messages, streamingText])
-  useEffect(() => { setStreamingText(''); setDraft(''); setSummaryOpen(false) }, [selectedSession?.id])
+  useEffect(() => { setStreamingText(''); setDraft(''); setSummaryOpen(false); setContextData(undefined); setContextError('') }, [selectedSession?.id])
   if (!selectedSession) return <main className="chat-panel"><div className="empty-state">Sessionを選択してください</div></main>
   const submit = async () => {
     if (!draft.trim() || isSending) return
     const text = draft; setDraft(''); setIsSending(true); setStreamingText('')
     try { await sendMessage(text, (token) => setStreamingText((value) => value + token)) } finally { setIsSending(false); setStreamingText('') }
   }
-  const openSummary = async () => { setSummaryOpen(true); setSummaryDraft(selectedSession.adoptionSummary ?? ''); const generated = await generateSummary(); if (!selectedSession.adoptionSummary) setSummaryDraft(generated) }
-  const save = async () => { await saveSummary(summaryDraft); setSummaryOpen(false) }
+  const openSummary = async () => {
+    setSummaryOpen(true)
+    setSummaryDraft(selectedSession.adoptionSummary ?? '')
+    if (selectedSession.adoptionSummary?.trim()) return
+    setSummaryLoading(true)
+    try { setSummaryDraft(await generateSummary()) } finally { setSummaryLoading(false) }
+  }
+  const save = async () => { if (!summaryDraft.trim()) return; try { await saveSummary(summaryDraft.trim()); setSummaryOpen(false) } catch { /* error remains visible in the workspace */ } }
+  const changeStatus = (status: SessionStatus) => {
+    if (status === 'adopted' && !selectedSession.adoptionSummary?.trim()) void openSummary()
+    else void updateSession({ status })
+  }
+  const openContext = async () => {
+    setContextLoading(true); setContextError('')
+    try { setContextData(await loadContext()) } catch { setContextError('Contextを取得できませんでした。') } finally { setContextLoading(false) }
+  }
   return <main className="chat-panel">
-    <div className="chat-header"><div className="chat-header-title"><button className="mobile-only icon-button" onClick={onMenu} aria-label="メニュー"><MenuIcon /></button><div><h1>{selectedSession.title}</h1><div className="chat-header-sub"><StatusBadge status={selectedSession.status} /><span>Session · このThreadの採用内容がContextに反映されます</span></div></div></div><div className="chat-header-actions"><button className={`icon-button ${selectedSession.pinned ? 'active' : ''}`} aria-label="ピン留め" onClick={() => updateSession({ pinned: !selectedSession.pinned })}><PinIcon /></button><button className={`icon-button ${selectedSession.archived ? 'active' : ''}`} aria-label="アーカイブ" onClick={() => updateSession({ archived: !selectedSession.archived })}><ArchiveIcon /></button><select className="status-select" aria-label="Session status" value={selectedSession.status} onChange={(event) => updateSession({ status: event.target.value as SessionStatus })}>{Object.entries(statusMeta).map(([value, meta]) => <option key={value} value={value}>{meta.icon} {meta.label}</option>)}</select></div></div>
-    <div className="chat-content panel-scroll">{connectionError && <div className="error-note" role="alert">{connectionError}</div>}<div className="context-note"><span className="context-note-icon">✦</span><span>同じThreadの<strong>採用済みSession</strong>が、この相談の前提として自動で引き継がれています。</span></div>{messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="message-avatar">{message.role === 'user' ? '創' : '✦'}</div><div className="message-body"><div className="message-role">{message.role === 'user' ? 'あなた' : 'storyweave'}<span className="message-time">{message.createdAt ? new Date(message.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : ''}</span></div><div className="message-content"><Markdown content={message.content} /><MessageSources message={message} /></div></div></article>)}{streamingText && <article className="message assistant"><div className="message-avatar">✦</div><div className="message-body"><div className="message-role">storyweave<span className="typing-dot" /></div><div className="message-content"><Markdown content={streamingText} /></div></div></article>}{isSending && !streamingText && <div className="thinking"><span /><span /><span /> 考えています…</div>}<div ref={bottomRef} /></div>
+    <div className="chat-header"><div className="chat-header-title"><button className="mobile-only icon-button" onClick={onMenu} aria-label="メニュー"><MenuIcon /></button><div><h1>{selectedSession.title}</h1><div className="chat-header-sub"><StatusBadge status={selectedSession.status} /><span>Session · このThreadの採用内容がContextに反映されます</span></div></div></div><div className="chat-header-actions"><button className={`icon-button ${selectedSession.pinned ? 'active' : ''}`} aria-label="ピン留め" onClick={() => void updateSession({ pinned: !selectedSession.pinned })}><PinIcon /></button><button className={`icon-button ${selectedSession.archived ? 'active' : ''}`} aria-label="アーカイブ" onClick={() => void updateSession({ archived: !selectedSession.archived })}><ArchiveIcon /></button><select className="status-select" aria-label="Session status" value={selectedSession.status} onChange={(event) => changeStatus(event.target.value as SessionStatus)}>{Object.entries(statusMeta).map(([value, meta]) => <option key={value} value={value}>{meta.icon} {meta.label}</option>)}</select></div></div>
+    <div className="chat-content panel-scroll">{connectionError && <div className="error-note" role="alert">{connectionError}</div>}{contextError && <div className="error-note" role="alert">{contextError}</div>}<button className="context-note" onClick={() => void openContext()} disabled={contextLoading}><span className="context-note-icon">✦</span><span>同じThreadの<strong>採用済みSession</strong>が、この相談の前提として自動で引き継がれています。{contextLoading ? '確認中…' : ' 内容を見る'}</span></button>{messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="message-avatar">{message.role === 'user' ? '創' : '✦'}</div><div className="message-body"><div className="message-role">{message.role === 'user' ? 'あなた' : 'storyweave'}<span className="message-time">{message.createdAt ? new Date(message.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : ''}</span></div><div className="message-content"><Markdown content={message.content} />{message.metadata?.generation_status === 'interrupted' && <p className="interrupted-note">生成が途中で中断されました</p>}<MessageSources message={message} /></div></div></article>)}{streamingText && <article className="message assistant"><div className="message-avatar">✦</div><div className="message-body"><div className="message-role">storyweave<span className="typing-dot" /></div><div className="message-content"><Markdown content={streamingText} /></div></div></article>}{isSending && !streamingText && <div className="thinking"><span /><span /><span /> 考えています…</div>}<div ref={bottomRef} /></div>
     <div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit() } }} placeholder="このSessionについて相談する…" rows={1} aria-label="メッセージ" /><button className="send-button" aria-label="送信" disabled={!draft.trim() || isSending} onClick={() => void submit()}><SendIcon size={17} /></button></div><div className="composer-hint"><span>⌘ Enter で送信</span><button className="summary-button" onClick={() => void openSummary()}><SparkleIcon size={14} />採用内容を整理</button></div></div>
-    {summaryOpen && <div className="summary-sheet"><div className="summary-sheet-heading"><div><span className="eyebrow">ADOPTION SUMMARY</span><h2>採用内容を整理</h2></div><button className="icon-button" onClick={() => setSummaryOpen(false)} aria-label="閉じる"><CloseIcon /></button></div><p>この会話で採用する設定だけを残します。生成案は自動保存されません。</p><textarea value={summaryDraft} onChange={(event) => setSummaryDraft(event.target.value)} aria-label="採用内容" /><div className="summary-actions"><button className="subtle-button" onClick={() => setSummaryOpen(false)}>キャンセル</button><button className="primary-button" onClick={() => void save()}><CheckIcon size={16} />保存して採用にする</button></div></div>}
+    {summaryOpen && <div className="summary-sheet"><div className="summary-sheet-heading"><div><span className="eyebrow">ADOPTION SUMMARY</span><h2>採用内容を整理</h2></div><button className="icon-button" onClick={() => setSummaryOpen(false)} aria-label="閉じる"><CloseIcon /></button></div><p>この会話で採用する設定だけを残します。生成案は自動保存されません。</p><textarea value={summaryDraft} onChange={(event) => setSummaryDraft(event.target.value)} aria-label="採用内容" disabled={summaryLoading} placeholder={summaryLoading ? '要約案を生成しています…' : undefined} /><div className="summary-actions"><button className="subtle-button" onClick={() => setSummaryOpen(false)}>キャンセル</button><button className="primary-button" disabled={summaryLoading || !summaryDraft.trim()} onClick={() => void save()}><CheckIcon size={16} />保存して採用にする</button></div></div>}
+    {contextData && <ContextInspector data={contextData} onClose={() => setContextData(undefined)} />}
   </main>
 }
 
@@ -108,16 +128,19 @@ export function CreateDialog({ kind, onClose }: { kind: 'project' | 'thread' | '
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const labels = { project: 'Project', thread: 'Thread', session: 'Session' }
-  const submit = async () => { if (!title.trim()) return; if (kind === 'project') await createProject(title.trim(), description.trim()); if (kind === 'thread' && selectedProject) await createThread(title.trim(), description.trim()); if (kind === 'session' && selectedThread) await createSession(title.trim()); onClose() }
+  const submit = async () => { if (!title.trim()) return; try { if (kind === 'project') await createProject(title.trim(), description.trim()); if (kind === 'thread' && selectedProject) await createThread(title.trim(), description.trim()); if (kind === 'session' && selectedThread) await createSession(title.trim()); onClose() } catch { /* Workspace keeps the dialog open and exposes the save error. */ } }
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-title"><div className="modal-heading"><div><span className="eyebrow">NEW {labels[kind].toUpperCase()}</span><h2 id="create-title">{labels[kind]}を作成</h2></div><button className="icon-button" onClick={onClose} aria-label="閉じる"><CloseIcon /></button></div><label>タイトル<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void submit() }} placeholder={`${labels[kind]}の名前`} /></label>{kind !== 'session' && <label>メモ <span className="optional">任意</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="この作品の方向性や、あとで思い出したいこと" /></label>}<button className="primary-button full-width" disabled={!title.trim()} onClick={() => void submit()}>{labels[kind]}を作成</button></div></div>
 }
 
 export function SearchDialog({ onClose }: { onClose: () => void }) {
-  const { projects, threads, sessions, selectProject, selectThread, selectSession } = useWorkspace()
+  const { projects, threads, sessions, messages, selectedSession, selectProject, selectThread, selectSession } = useWorkspace()
   const [query, setQuery] = useState('')
   const [remoteResults, setRemoteResults] = useState<SearchResult[]>([])
+  const [activeIndex, setActiveIndex] = useState(0)
   useEffect(() => { if (!query.trim() || import.meta.env.MODE === 'test') { setRemoteResults([]); return }; const timer = window.setTimeout(() => { void searchApi.search(query.trim()).then(setRemoteResults).catch(() => setRemoteResults([])) }, 200); return () => window.clearTimeout(timer) }, [query])
-  const results = useMemo<SearchResult[]>(() => { const q = query.toLocaleLowerCase(); if (!q) return []; const local = [...projects.map((item): SearchResult => ({ type: 'project', title: item.title, id: item.id, projectId: item.id })), ...threads.map((item): SearchResult => ({ type: 'thread', title: item.title, id: item.id, projectId: item.projectId })), ...sessions.map((item): SearchResult => ({ type: 'session', title: item.title, id: item.id, threadId: item.threadId }))].filter((item) => item.title.toLocaleLowerCase().includes(q)); return [...local, ...remoteResults].filter((item, index, all) => all.findIndex((other) => other.type === item.type && other.id === item.id) === index) }, [projects, threads, sessions, query, remoteResults])
-  const pick = (item: SearchResult) => { if (item.type === 'project') selectProject(item.id); else if (item.type === 'thread') { selectProject(item.projectId!); selectThread(item.id) } else { const thread = threads.find((threadItem) => threadItem.id === item.threadId); if (thread) { selectProject(thread.projectId); selectThread(thread.id) }; selectSession(item.id) }; onClose() }
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div className="search-dialog" role="dialog" aria-modal="true"><div className="search-input-wrap"><SearchIcon size={19} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Project、Thread、Sessionを検索…" /><button className="icon-button" onClick={onClose} aria-label="閉じる"><CloseIcon size={17} /></button></div><div className="search-results">{!query && <div className="search-empty"><SearchIcon size={25} /><p>作品やSessionを横断して探せます</p><span>タイトル、採用内容、メッセージを検索対象にできます</span></div>}{query && results.length === 0 && <div className="search-empty"><p>「{query}」に一致する結果はありません</p></div>}{results.map((item) => <button className="search-result" key={`${item.type}-${item.id}`} onClick={() => pick(item)}><span className="result-type">{item.type}</span><span>{item.title}</span></button>)}</div><div className="search-footer"><span>Enterで選択</span><span>Escで閉じる</span></div></div></div>
+  const results = useMemo<SearchResult[]>(() => { const q = query.toLocaleLowerCase(); if (!q) return []; const local = [...projects.map((item): SearchResult => ({ type: 'project', title: item.title, id: item.id, projectId: item.id })), ...threads.map((item): SearchResult => ({ type: 'thread', title: item.title, id: item.id, projectId: item.projectId })), ...sessions.map((item): SearchResult => ({ type: 'session', title: item.title, id: item.id, threadId: item.threadId })), ...messages.map((item): SearchResult => ({ type: 'message', title: selectedSession?.title ?? 'Message', id: item.id, threadId: selectedSession?.threadId, sessionId: item.sessionId, excerpt: item.content }))].filter((item) => `${item.title} ${item.excerpt ?? ''}`.toLocaleLowerCase().includes(q)); return [...local, ...remoteResults].filter((item, index, all) => all.findIndex((other) => other.type === item.type && other.id === item.id) === index) }, [projects, threads, sessions, messages, selectedSession, query, remoteResults])
+  useEffect(() => { setActiveIndex((index) => Math.min(index, Math.max(results.length - 1, 0))) }, [query, results.length])
+  const pick = (item: SearchResult) => { if (item.type === 'project') selectProject(item.id); else if (item.type === 'thread') { if (item.projectId) selectProject(item.projectId); selectThread(item.id) } else { const sessionId = item.type === 'message' ? item.sessionId : item.id; const thread = threads.find((threadItem) => threadItem.id === item.threadId); if (thread) { selectProject(thread.projectId); selectThread(thread.id) }; if (sessionId) selectSession(sessionId) }; onClose() }
+  const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => { if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex((index) => Math.min(index + 1, Math.max(results.length - 1, 0))) } else if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex((index) => Math.max(index - 1, 0)) } else if (event.key === 'Enter' && results[activeIndex]) { event.preventDefault(); pick(results[activeIndex]) } }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div className="search-dialog" role="dialog" aria-modal="true"><div className="search-input-wrap"><SearchIcon size={19} /><input autoFocus value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0) }} onKeyDown={onSearchKeyDown} placeholder="Project、Thread、Sessionを検索…" /><button className="icon-button" onClick={onClose} aria-label="閉じる"><CloseIcon size={17} /></button></div><div className="search-results">{!query && <div className="search-empty"><SearchIcon size={25} /><p>作品やSessionを横断して探せます</p><span>タイトル、採用内容、メッセージを検索対象にできます</span></div>}{query && results.length === 0 && <div className="search-empty"><p>「{query}」に一致する結果はありません</p></div>}{results.map((item, index) => <button aria-selected={index === activeIndex} className={`search-result ${index === activeIndex ? 'active' : ''}`} key={`${item.type}-${item.id}`} onClick={() => pick(item)}><span className="result-type">{item.type}</span><span>{item.title}</span></button>)}</div><div className="search-footer"><span>↑↓移動 · Enterで選択</span><span>Escで閉じる</span></div></div></div>
 }

@@ -5,15 +5,15 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from . import llm
-from .context_builder import build_system_context
+from .context_builder import adopted_sessions_for_context, build_system_context
 from .db import get_db
 from .models import Message, Project, Source, StorySession, Thread
 from .schemas import (
     ChatIn, MessageOut, MessageWithSourcesOut, ProjectCreate, ProjectOut, ProjectUpdate, SearchResult,
     SessionCreate, SessionOut, SessionUpdate, SourceCreate, SourceOut, SummaryIn,
-    SummaryOut, ThreadCreate, ThreadOut, ThreadUpdate, WebFetchIn, WebSearchIn,
+    SummaryOut, ThreadCreate, ThreadOut, ThreadUpdate, WebFetchIn, WebSearchIn, ContextInspectorOut, ContextSessionOut,
 )
 from .tools import FetchResult
 from .web import fetch_one, format_source_context, persist_source, search_and_fetch
@@ -38,6 +38,10 @@ def require(db: Session, model: type, item_id: str):
 def apply_patch(item, payload) -> None:
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(item, key, value)
+
+def validate_session_state(status: object, adoption_summary: str | None) -> None:
+    if status == "adopted" and not (adoption_summary and adoption_summary.strip()):
+        raise HTTPException(status_code=422, detail="adopted sessions require a non-empty adoption_summary")
 
 def session_out(db: Session, item: StorySession) -> SessionOut:
     count = db.scalar(select(func.count(Message.id)).where(Message.session_id == item.id)) or 0
@@ -64,8 +68,19 @@ def recent_history(items: list[Message], max_chars: int = 20_000) -> list[Messag
 
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, str]:
-    db.execute(text("SELECT 1"))
-    return {"status": "ok"}
+    try:
+        db.execute(text("SELECT 1")); database = "ok"
+    except Exception:
+        database = "unavailable"
+    llm_status = "unavailable"
+    if llm.settings.openai_base_url and llm.settings.openai_model:
+        try:
+            import httpx
+            response = httpx.get(f"{llm.settings.openai_base_url.rstrip('/')}/models", headers=llm._headers(), timeout=3)
+            llm_status = "ok" if response.status_code < 400 else "unavailable"
+        except Exception:
+            pass
+    return {"status": "ok" if database == "ok" else "degraded", "database": database, "llm": llm_status, "model": llm.settings.openai_model}
 
 @router.get("/projects", response_model=list[ProjectOut])
 def list_projects(db: Session = Depends(get_db)):
@@ -125,6 +140,8 @@ def list_sessions(thread_id: str, db: Session = Depends(get_db)):
 @router.post("/threads/{thread_id}/sessions", response_model=SessionOut, status_code=201)
 def create_session(thread_id: str, payload: SessionCreate, db: Session = Depends(get_db)):
     require(db, Thread, thread_id)
+    if payload.status == "adopted":
+        raise HTTPException(status_code=422, detail="create the session first, then save a non-empty adoption summary")
     item = StorySession(thread_id=thread_id, **payload.model_dump()); db.add(item); db.commit(); db.refresh(item)
     return session_out(db, item)
 
@@ -134,7 +151,14 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/sessions/{session_id}", response_model=SessionOut)
 def update_session(session_id: str, payload: SessionUpdate, db: Session = Depends(get_db)):
-    item = require(db, StorySession, session_id); apply_patch(item, payload); db.commit(); db.refresh(item)
+    item = require(db, StorySession, session_id)
+    changes = payload.model_dump(exclude_unset=True)
+    if "adoption_summary" in changes:
+        changes["adoption_summary"] = changes["adoption_summary"].strip() or None if changes["adoption_summary"] is not None else None
+    validate_session_state(changes.get("status", item.status), changes.get("adoption_summary", item.adoption_summary))
+    for key, value in changes.items():
+        setattr(item, key, value)
+    db.commit(); db.refresh(item)
     return session_out(db, item)
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -175,25 +199,45 @@ async def chat(session_id: str, payload: ChatIn, db: Session = Depends(get_db)):
         prompt[0]["content"] += "\n\n" + source_context
     prompt.extend({"role": item.role.value if hasattr(item.role, "value") else str(item.role), "content": item.content} for item in recent_history(history))
     prompt.append({"role": "user", "content": payload.content})
+    stream_session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
 
     async def events() -> AsyncIterator[str]:
         parts: list[str] = []
+        assistant_id: str | None = None
         try:
             async for token in llm.stream_completion(prompt):
                 parts.append(token)
+                if assistant_id is None:
+                    with stream_session_factory() as save_db:
+                        assistant = Message(session_id=session_id, role="assistant", content="", model=llm.settings.openai_model, metadata_json={"generation_status": "streaming"})
+                        save_db.add(assistant); save_db.commit(); assistant_id = assistant.id
                 yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
-            assistant = Message(session_id=session_id, role="assistant", content="".join(parts), model=llm.settings.openai_model)
-            db.add(assistant); db.flush()
-            for result in web_sources:
-                persist_source(db, session_id, result, message_id=assistant.id)
-            db.commit()
-            final_message = message_out(db, assistant).model_dump(by_alias=True, mode="json")
+            with stream_session_factory() as save_db:
+                assistant = save_db.get(Message, assistant_id) if assistant_id else Message(session_id=session_id, role="assistant", content="", model=llm.settings.openai_model)
+                assistant.content = "".join(parts); assistant.metadata_json = {"generation_status": "completed"}; save_db.add(assistant); save_db.flush()
+                for result in web_sources: persist_source(save_db, session_id, result, message_id=assistant.id)
+                save_db.commit(); save_db.refresh(assistant)
+                final_message = message_out(save_db, assistant).model_dump(by_alias=True, mode="json")
             yield f"event: done\ndata: {json.dumps({'message': final_message}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
-        except Exception:
-            db.rollback()
+        except BaseException as exc:
+            interrupted_message: dict | None = None
+            if assistant_id:
+                with stream_session_factory() as save_db:
+                    assistant = save_db.get(Message, assistant_id)
+                    if assistant:
+                        assistant.content = "".join(parts); assistant.metadata_json = {"generation_status": "interrupted"}
+                        for result in web_sources:
+                            if not save_db.scalar(select(Source.id).where(Source.message_id == assistant.id, Source.url == result.url)):
+                                persist_source(save_db, session_id, result, message_id=assistant.id)
+                        save_db.commit()
+                        save_db.refresh(assistant)
+                        interrupted_message = message_out(save_db, assistant).model_dump(by_alias=True, mode="json")
             logger.exception("LLM streaming failed for session %s", session_id)
-            yield f"event: error\ndata: {json.dumps({'content': 'LLMへの接続または生成に失敗しました。設定とサーバー状態を確認してください。'}, ensure_ascii=False)}\n\n"
+            if isinstance(exc, Exception):
+                yield f"event: error\ndata: {json.dumps({'content': 'LLMへの接続または生成に失敗しました。設定とサーバー状態を確認してください。', 'message': interrupted_message}, ensure_ascii=False)}\n\n"
+            else:
+                raise
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -241,8 +285,20 @@ def save_summary(session_id: str, payload: SummaryIn, db: Session = Depends(get_
     current.adoption_summary = payload.summary.strip() or None
     if current.adoption_summary:
         current.status = "adopted"
+    elif current.status == "adopted":
+        current.status = "considering"
     db.commit(); db.refresh(current)
     return session_out(db, current)
+
+@router.get("/sessions/{session_id}/context", response_model=ContextInspectorOut)
+def context_inspector(session_id: str, db: Session = Depends(get_db)):
+    current = require(db, StorySession, session_id)
+    thread = require(db, Thread, current.thread_id); project = require(db, Project, thread.project_id)
+    adopted = adopted_sessions_for_context(db, current)
+    counts = {status: db.scalar(select(func.count(StorySession.id)).where(StorySession.thread_id == thread.id, StorySession.id != current.id, StorySession.status == status)) or 0 for status in ("considering", "rejected", "superseded")}
+    confirmed = "\n\n".join(f"[{s.title}]\n{s.adoption_summary.strip()}" for s in adopted)
+    history = list(db.scalars(select(Message).where(Message.session_id == current.id)))
+    return ContextInspectorOut(project=project, thread=thread, current_session=session_out(db,current), adopted_sessions=[ContextSessionOut(id=s.id,title=s.title,summary=s.adoption_summary.strip(),archived=s.archived) for s in adopted], excluded_counts=counts, confirmed_context_chars=len(confirmed), current_history_chars=sum(len(m.content) for m in history))
 
 @router.get("/sessions/{session_id}/sources", response_model=list[SourceOut])
 def list_sources(session_id: str, db: Session = Depends(get_db)):

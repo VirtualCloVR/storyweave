@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from .api import router
 from .config import settings
-from .db import Base, SessionLocal, engine
+from .db import SessionLocal
 from .models import Project, StorySession, Thread
 
 def seed() -> None:
@@ -24,7 +24,6 @@ def seed() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(engine)
     seed()
     yield
 
@@ -35,4 +34,3 @@ app.include_router(router)
 @app.get("/health")
 def root_health() -> dict[str, str]:
     return {"status": "ok"}
-

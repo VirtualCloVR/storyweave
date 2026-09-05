@@ -40,6 +40,7 @@ services:
       MCP_SEARCH_SERVER_PATH: ${MCP_SEARCH_SERVER_PATH:-/opt/mcp-searxng/server.py}
       MCP_SEARCH_TIMEOUT_SECONDS: ${MCP_SEARCH_TIMEOUT_SECONDS:-20}
       MCP_FETCH_MAX_CHARS: ${MCP_FETCH_MAX_CHARS:-8000}
+      SEARXNG_URL: ${SEARXNG_URL:-http://host.docker.internal:8080}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-180}
     volumes:
       - ./mcp-searxng:/opt/mcp-searxng:ro
@@ -57,14 +58,11 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api}
     ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - "${FRONTEND_PORT:-8080}:80"
     depends_on:
       backend:
         condition: service_healthy

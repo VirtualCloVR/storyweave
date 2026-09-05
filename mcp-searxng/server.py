@@ -1,4 +1,5 @@
 import ipaddress
+import os
 import socket
 from typing import Any
 from urllib.parse import urlparse
@@ -10,7 +11,8 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("searxng-search")
 
-SEARXNG_URL = "http://192.168.11.7:8080/search"
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+SEARXNG_SEARCH_URL = SEARXNG_URL if SEARXNG_URL.endswith("/search") else f"{SEARXNG_URL}/search"
 MAX_RESPONSE_BYTES = 2_000_000
 
 
@@ -29,7 +31,7 @@ def web_search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Search the web using local SearXNG and return title, url, and snippet."""
     max_results = max(1, min(max_results, 10))
     response = requests.get(
-        SEARXNG_URL,
+        SEARXNG_SEARCH_URL,
         params={"q": query, "format": "json"},
         timeout=30,
     )
