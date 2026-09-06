@@ -19,12 +19,14 @@ async def main() -> None:
         ))
     finally:
         await stack.aclose()
+    if isinstance(search, dict):
+        search = search.get("results", search.get("items", []))
     search_count = len(search) if isinstance(search, list) else -1
     fetch_chars = len(fetched.get("content", "")) if isinstance(fetched, dict) else -1
     print(f"tools={','.join(tools)}")
     print(f"web_search_results={search_count}")
     print(f"fetch_page_chars={fetch_chars}")
-    if tools != ["fetch_page", "web_search"] or fetch_chars <= 0:
+    if tools != ["fetch_page", "web_search"] or search_count < 1 or fetch_chars <= 0:
         raise SystemExit(1)
 
 

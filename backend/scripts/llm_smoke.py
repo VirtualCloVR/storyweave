@@ -11,8 +11,9 @@ with httpx.Client(timeout=httpx.Timeout(240, connect=10)) as client:
         project = client.post(f"{api}/projects", json={"title": "LLM smoke", "systemPrompt": "日本語で短く回答してください。"}).raise_for_status().json()
         project_id = project["id"]
         thread = client.post(f"{api}/projects/{project_id}/threads", json={"title": "Context check"}).raise_for_status().json()
-        adopted = client.post(f"{api}/threads/{thread['id']}/sessions", json={"title": "確定コード", "status": "adopted"}).raise_for_status().json()
-        client.put(f"{api}/sessions/{adopted['id']}/summary", json={"summary": "- 確定済みコードは KAGARI_731"}).raise_for_status()
+        session = client.post(f"{api}/threads/{thread['id']}/sessions", json={"title": "確定コード", "status": "considering"}).raise_for_status().json()
+        adopted = client.put(f"{api}/sessions/{session['id']}/summary", json={"summary": "- 確定済みコードは KAGARI_731"}).raise_for_status().json()
+        assert adopted["status"] == "adopted" and adopted["adoptionSummary"].strip()
         current = client.post(f"{api}/threads/{thread['id']}/sessions", json={"title": "継承確認"}).raise_for_status().json()
 
         tokens: list[str] = []

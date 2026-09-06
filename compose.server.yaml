@@ -1,0 +1,15 @@
+services:
+  postgres:
+    # The database is reachable only by services on the Compose network.
+    ports: !reset []
+
+  backend:
+    # The API is reached through the frontend reverse proxy, not directly
+    # from the Docker host/network.
+    ports: !reset []
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    ports: !override
+      - "${STORYWEAVE_BIND_ADDRESS:-127.0.0.1}:${STORYWEAVE_HTTP_PORT:-18080}:80"

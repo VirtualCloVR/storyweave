@@ -127,6 +127,14 @@ docker compose ps
 docker compose logs -f backend
 ```
 
+別のDockerホストへ公開する場合は、サーバー用overrideを重ねます。既定では
+`127.0.0.1:18080`（PostgreSQLとBackendはホストへ公開しません）。LAN公開が必要な場合だけ、`.env`で
+`STORYWEAVE_BIND_ADDRESS`（例 `192.168.11.7`）と`STORYWEAVE_HTTP_PORT`を指定してください。
+
+```bash
+docker compose -f compose.yaml -f compose.server.yaml up -d --build
+```
+
 開発中にViteを使う場合は、Frontendディレクトリで`npm run dev -- --host 0.0.0.0 --port 5173`を実行します。既定の`/api`はVite proxyが`http://localhost:8000`へ転送します。別のBackendを使う場合だけ`VITE_API_BASE_URL`で上書きしてください。Composeのnginx構成は常に同一オリジンの`/api`を使います。
 
 停止する場合は次を実行します。データを残すため、通常の停止ではvolumeを削除しません。

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,11 +35,22 @@ class McpWebClient:
     def available(self) -> bool:
         return Path(self.command).is_file() and Path(self.server_path).is_file()
 
+    @staticmethod
+    def _server_environment() -> dict[str, str]:
+        # The MCP SDK intentionally inherits only a small safe allowlist.
+        # Pass the one setting required by the SearXNG child explicitly.
+        searxng_url = os.environ.get("SEARXNG_URL", "").strip()
+        return {"SEARXNG_URL": searxng_url} if searxng_url else {}
+
     async def _open(self) -> tuple[AsyncExitStack, ClientSession]:
         stack = AsyncExitStack()
         try:
             read, write = await stack.enter_async_context(stdio_client(
-                StdioServerParameters(command=self.command, args=[self.server_path]),
+                StdioServerParameters(
+                    command=self.command,
+                    args=[self.server_path],
+                    env=self._server_environment(),
+                ),
             ))
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
@@ -54,19 +66,39 @@ class McpWebClient:
 
     @staticmethod
     def _tool_value(result: Any) -> Any:
-        structured = getattr(result, "structuredContent", None) or getattr(result, "structured_content", None)
+        def normalize(value: Any) -> Any:
+            if hasattr(value, "model_dump"):
+                value = value.model_dump(by_alias=True)
+            if isinstance(value, dict) and "result" in value:
+                return normalize(value["result"])
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return value
+            return value
+
+        # The Python SDK has used both camelCase and snake_case fields, and
+        # some versions expose only a model-dump mapping.
+        result_map = result.model_dump(by_alias=True) if hasattr(result, "model_dump") else result if isinstance(result, dict) else None
+        structured = (
+            getattr(result, "structuredContent", None)
+            or getattr(result, "structured_content", None)
+            or (result_map or {}).get("structuredContent")
+            or (result_map or {}).get("structured_content")
+        )
         if structured:
-            if isinstance(structured, dict) and set(structured) == {"result"}:
-                return structured["result"]
-            return structured
-        for item in getattr(result, "content", []):
+            # FastMCP/mcp versions may add metadata alongside the result
+            # envelope or serialize the wrapped value as JSON text.
+            return normalize(structured)
+        content = getattr(result, "content", None) or (result_map or {}).get("content", [])
+        for item in content:
             text = getattr(item, "text", None)
+            if text is None and isinstance(item, dict):
+                text = item.get("text")
             if not text:
                 continue
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return text
+            return normalize(text)
         return None
 
     async def search_and_fetch(self, query: str, max_results: int = 3) -> list[FetchResult]:
