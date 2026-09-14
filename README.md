@@ -2,11 +2,15 @@
 
 作品ごとの検討事項を「採用・検討中・没」として管理し、採用した内容だけを次の相談へ引き継ぐ、創作・SS相談専用のWebワークスペースです。ChatGPTの汎用クローンではなく、`Project → Thread → Session → Message` の構造を中心に設計します。
 
-## v0.1の方針
+## v0.2 Structured Contextの方針
 
 自宅LANまたはVPN（主にTailscale）内で利用する前提です。認証・マルチユーザー・公開インターネット向けの運用は対象外です。LLMはアプリに内蔵せず、Ollama、llama.cpp、vLLMなどが提供するOpenAI互換HTTP APIへ接続します。
 
 採用済みSessionの`adoption_summary`だけを、同じThreadの別SessionのLLMコンテキストへ投入します。`considering`、`rejected`、`superseded`は投入せず、`archived`は採用知識としての有効性と分離して扱います。
+
+v0.2では、全Workspaceで再利用するGlobal Character Sheet、Threadから参照するCast、Thread LocalなScene Sheetを追加しました。Character FactはCastに明示されたCharacterのうち、`always_include`または現在・直近のUser発言で名前/Aliasが検出されたものだけを投入します。Scene Factは同じThreadのものだけを常時投入します。
+
+Context Plannerは文字数Budget内で`Character → Scene → adopted Canon → Web → Recent History`を組み立てます。Canonが大きい場合だけThread Digestと関連性の高いadoption summaryへ圧縮します。Digestは`source_hash`でfreshnessを判定する派生Cacheであり、Character Fact、Scene Fact、`adoption_summary`が常にSource of Truthです。
 
 ## Architecture
 
@@ -41,7 +45,7 @@ BackendがProject、Thread、Session、Message、Sourceを永続化します。F
 └── README.md
 ```
 
-v0.1ではベクトルDB、embedding、複雑なAgent Frameworkは導入していません。
+v0.2ではベクトルDB、embedding、複雑なAgent Frameworkは導入していません。
 
 ## 環境変数
 
@@ -64,6 +68,10 @@ v0.1ではベクトルDB、embedding、複雑なAgent Frameworkは導入して�
 | `MCP_SEARCH_SERVER_PATH` | stdio MCPサーバのコンテナ内パス | `/opt/mcp-searxng/server.py` |
 | `MCP_FETCH_MAX_CHARS` | `fetch_page`から受け取る本文の上限 | `8000` |
 | `LLM_TIMEOUT_SECONDS` | ローカルLLMの生成timeout | `180` |
+| `CONTEXT_BUDGET_CHARS` | Prompt全体の文字数Budget | `24000` |
+| `CONTEXT_HISTORY_MAX_CHARS` | Recent Conversationの上限 | `10000` |
+| `CONTEXT_WEB_MAX_CHARS` | Promptへ投入するWeb Context上限 | `5000` |
+| `CONTEXT_DIGEST_TARGET_CHARS` | Canon Digestの目標文字数 | `4000` |
 | `SEARXNG_URL` | Backendから到達するSearXNGのベースURL | `http://host.docker.internal:8080` |
 
 ## PostgreSQL起動
@@ -172,9 +180,9 @@ APIキーはログへ出力せず、Frontendへ渡しません。公開インタ
 
 Tailscaleの自動設定は行いません。アプリをLAN/VPNから到達可能なホストで起動し、BackendとFrontendのbind address、Windows Firewall、Tailscale ACLを利用者のネットワーク方針に合わせて設定します。端末からはTailnet内のホスト名またはTailscale IPでFrontendへアクセスします。
 
-インターネットへ直接公開する構成ではありません。認証はv0.1の対象外ですが、Tailnetの端末・ACL管理を前提にし、`CORS_ORIGINS`は実際に使うFrontend originだけを列挙してください。機密データを扱う場合は、Tailnet全体のアクセス権も確認してください。
+インターネットへ直接公開する構成ではありません。認証はv0.2の対象外ですが、Tailnetの端末・ACL管理を前提にし、`CORS_ORIGINS`は実際に使うFrontend originだけを列挙してください。機密データを扱う場合は、Tailnet全体のアクセス権も確認してください。
 
-## v0.1で実装済みの機能
+## v0.2で実装済みの機能
 
 - Project / Thread / Session / Message / Sourceの永続化とCRUD
 - Sessionのstatus（採用、検討中、没、差し替え済み）、archive、pin管理
@@ -187,6 +195,10 @@ Tailscaleの自動設定は行いません。アプリをLAN/VPNから到達可�
 - Health API、Alembic migration、Backend重要ロジックのテスト
 - stdio MCPの`web_search`→`fetch_page`を使うWeb調査、回答ごとのSource保存、折りたたみURL表示
 - MCP利用前のScheme、private IP、allowlist検査と、MCP検索0件時だけの内蔵検索フォールバック
+- Global Character Library（AliasとKey/Value Fact）、Thread Cast参照、Thread Local Scene Sheet
+- DeterministicなNFKC/casefold/substring Character選択とcompact KV serialization
+- Context Budget、Canon Digest cache、lexical Relevant Canon、失敗時のdeterministic fallback
+- Character/Scene/Canon/History/Webの投入内容とサイズを確認できるContext Inspector/Preview API
 
 ## テスト
 
@@ -204,7 +216,7 @@ npm run build
 
 ## 今後追加予定の機能
 
-PWA、認証・マルチユーザー、設定資料の編集支援、JavaScript描画ページ向け取得、より高度な検索を追加候補とします。v0.1ではAIによる設定資料の自動書換、embedding、ベクトルDB、原稿エディタ、Git連携、Agent Framework、公開Internet向け認証基盤は実装しません。
+PWA、認証・マルチユーザー、設定資料の編集支援、JavaScript描画ページ向け取得、より高度な検索を追加候補とします。v0.2ではAIによる設定資料の自動書換、embedding、ベクトルDB、Knowledge Graph、原稿エディタ、Git連携、Agent Framework、公開Internet向け認証基盤は実装しません。
 
 ## ライセンス・運用メモ
 

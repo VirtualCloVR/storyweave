@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ChatStreamInterruptedError, createApiClient } from './api'
 import { seedMessages, seedProjects, seedSessions, seedThreads } from './mockData'
-import type { ApiClient, ContextInspectorData, HealthStatus, Message, Project, Session, SessionStatus, Thread } from './types'
+import type { ApiClient, ContextInspectorData, HealthStatus, Message, Project, Session, SessionStatus, Thread, WorkspaceItemKind } from './types'
 
 interface WorkspaceContextValue {
   projects: Project[]
@@ -14,6 +14,8 @@ interface WorkspaceContextValue {
   selectProject: (id: string) => void
   selectThread: (id: string) => void
   selectSession: (id: string) => void
+  deleteItem: (kind: WorkspaceItemKind, id: string) => Promise<void>
+  generatingSessionId: string
   createProject: (title: string, description?: string) => Promise<void>
   createThread: (title: string, description?: string) => Promise<void>
   createSession: (title: string) => Promise<void>
@@ -42,6 +44,7 @@ export function WorkspaceProvider({ children, client = api, sync = shouldSync }:
   const [projectId, setProjectId] = useState(sync ? '' : seedProjects[0].id)
   const [threadId, setThreadId] = useState(sync ? '' : seedThreads[0].id)
   const [sessionId, setSessionId] = useState(sync ? '' : seedSessions[2].id)
+  const [generatingSessionId, setGeneratingSessionId] = useState('')
   const [connectionError, setConnectionError] = useState<string>()
   const [health, setHealth] = useState<HealthStatus | undefined>(sync ? undefined : { status: 'ok', database: 'ok', llm: 'unavailable', model: 'offline-preview' })
 
@@ -87,6 +90,30 @@ export function WorkspaceProvider({ children, client = api, sync = shouldSync }:
   const selectThread = useCallback((id: string) => { setThreadId(id); const first = firstSession(sessions, id); setSessionId(first?.id ?? '') }, [sessions])
   const selectSession = useCallback((id: string) => { setSessionId(id); if (sync) void client.listMessages(id).then((items) => { setMessageMap((current) => ({ ...current, [id]: items })); setConnectionError(undefined) }).catch(() => setConnectionError('Message履歴を取得できませんでした。')) }, [client, sync])
 
+  const deleteItem = async (kind: WorkspaceItemKind, id: string) => {
+    const threadIds = new Set(threads.filter((item) => kind === 'project' ? item.projectId === id : kind === 'thread' && item.id === id).map((item) => item.id))
+    const sessionIds = new Set(sessions.filter((item) => kind === 'session' ? item.id === id : threadIds.has(item.threadId)).map((item) => item.id))
+    if (sessionIds.has(generatingSessionId)) throw new Error('回答の生成が終わってから削除してください。')
+    // Keep the current data until the server confirms deletion.
+    if (sync) {
+      try {
+        if (kind === 'project') await client.deleteProject(id)
+        if (kind === 'thread') await client.deleteThread(id)
+        if (kind === 'session') await client.deleteSession(id)
+      } catch { throw new Error('削除できませんでした。通信状態を確認して、もう一度お試しください。') }
+    }
+    if (kind === 'project') {
+      setProjects((items) => items.filter((item) => item.id !== id))
+      setProjectId((current) => current === id ? '' : current)
+    }
+    setThreads((items) => items.filter((item) => !threadIds.has(item.id)))
+    setSessions((items) => items.filter((item) => !sessionIds.has(item.id)))
+    setThreadId((current) => threadIds.has(current) ? '' : current)
+    setSessionId((current) => sessionIds.has(current) ? '' : current)
+    setMessageMap((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !sessionIds.has(key))))
+    setConnectionError(undefined)
+  }
+
   const createProject = async (title: string, description?: string) => {
     const before = { projectId, threadId, sessionId }
     const local: Project = { id: `project-${Date.now()}`, title, description }
@@ -115,6 +142,8 @@ export function WorkspaceProvider({ children, client = api, sync = shouldSync }:
   }
   const sendMessage = async (content: string, onToken?: (token: string) => void) => {
     if (!selectedSession || !content.trim()) return
+    setGeneratingSessionId(selectedSession.id)
+    try {
     const user: Message = { id: `message-${Date.now()}`, sessionId: selectedSession.id, role: 'user', content: content.trim(), createdAt: new Date().toISOString() }
     setMessageMap((items) => ({ ...items, [selectedSession.id]: [...(items[selectedSession.id] ?? []), user] }))
     const offlineReply = () => {
@@ -138,6 +167,7 @@ export function WorkspaceProvider({ children, client = api, sync = shouldSync }:
         setConnectionError('LLM応答を取得できませんでした。BackendログとLLM設定を確認してください。')
       }
     } else offlineReply()
+    } finally { setGeneratingSessionId('') }
   }
   const generateSummary = async () => {
     if (!selectedSession) return ''
@@ -159,7 +189,7 @@ export function WorkspaceProvider({ children, client = api, sync = shouldSync }:
     const confirmed = adoptedSessions.map((item) => `[${item.title}]\n${item.summary}`).join('\n\n')
     return { project: selectedProject, thread: selectedThread, currentSession: selectedSession, adoptedSessions, excludedCounts: { considering: siblings.filter((item) => item.status === 'considering').length, rejected: siblings.filter((item) => item.status === 'rejected').length, superseded: siblings.filter((item) => item.status === 'superseded').length }, confirmedContextChars: confirmed.length, currentHistoryChars: (messageMap[selectedSession.id] ?? []).reduce((sum, item) => sum + item.content.length, 0) }
   }, [client, messageMap, selectedProject, selectedSession, selectedThread, sessions, sync])
-  const value = useMemo(() => ({ projects, threads, sessions, messages: messageMap[sessionId] ?? [], selectedProject, selectedThread, selectedSession, selectProject, selectThread, selectSession, createProject, createThread, createSession, updateSession, sendMessage, generateSummary, saveSummary, loadContext, health, connectionError }), [projects, threads, sessions, messageMap, sessionId, selectedProject, selectedThread, selectedSession, selectProject, selectThread, selectSession, loadContext, health, connectionError])
+  const value = useMemo(() => ({ deleteItem, generatingSessionId, projects, threads, sessions, messages: messageMap[sessionId] ?? [], selectedProject, selectedThread, selectedSession, selectProject, selectThread, selectSession, createProject, createThread, createSession, updateSession, sendMessage, generateSummary, saveSummary, loadContext, health, connectionError }), [generatingSessionId, projects, threads, sessions, messageMap, sessionId, selectedProject, selectedThread, selectedSession, selectProject, selectThread, selectSession, loadContext, health, connectionError])
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }
 

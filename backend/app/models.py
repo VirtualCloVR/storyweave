@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
@@ -44,6 +44,55 @@ class Thread(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     project: Mapped[Project] = relationship(back_populates="threads")
     sessions: Mapped[list["StorySession"]] = relationship(back_populates="thread", cascade="all, delete-orphan")
+    characters: Mapped[list["ThreadCharacter"]] = relationship(back_populates="thread", cascade="all, delete-orphan")
+    scene_facts: Mapped[list["ThreadSceneFact"]] = relationship(back_populates="thread", cascade="all, delete-orphan")
+    context_digest: Mapped["ThreadContextDigest | None"] = relationship(back_populates="thread", cascade="all, delete-orphan", uselist=False)
+
+class Character(TimestampMixin, Base):
+    __tablename__ = "characters"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(240), index=True)
+    source_title: Mapped[str | None] = mapped_column(String(500))
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    facts: Mapped[list["CharacterFact"]] = relationship(back_populates="character", cascade="all, delete-orphan", order_by="CharacterFact.sort_order, CharacterFact.id")
+    thread_links: Mapped[list["ThreadCharacter"]] = relationship(back_populates="character", cascade="all, delete-orphan")
+
+class CharacterFact(TimestampMixin, Base):
+    __tablename__ = "character_facts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    character_id: Mapped[str] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(120))
+    value: Mapped[str] = mapped_column(String(2000))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    character: Mapped[Character] = relationship(back_populates="facts")
+
+class ThreadCharacter(Base):
+    __tablename__ = "thread_characters"
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="CASCADE"), primary_key=True)
+    character_id: Mapped[str] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"), primary_key=True)
+    always_include: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    thread: Mapped[Thread] = relationship(back_populates="characters")
+    character: Mapped[Character] = relationship(back_populates="thread_links")
+
+class ThreadSceneFact(TimestampMixin, Base):
+    __tablename__ = "thread_scene_facts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(120))
+    value: Mapped[str] = mapped_column(String(2000))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    thread: Mapped[Thread] = relationship(back_populates="scene_facts")
+
+class ThreadContextDigest(TimestampMixin, Base):
+    __tablename__ = "thread_context_digests"
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="CASCADE"), primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    source_session_count: Mapped[int] = mapped_column(Integer)
+    source_chars: Mapped[int] = mapped_column(Integer)
+    model: Mapped[str | None] = mapped_column(String(240))
+    thread: Mapped[Thread] = relationship(back_populates="context_digest")
 
 class StorySession(TimestampMixin, Base):
     __tablename__ = "sessions"

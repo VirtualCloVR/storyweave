@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     mcp_search_timeout_seconds: float = 20
     mcp_fetch_max_chars: int = 8000
     llm_timeout_seconds: float = 180
+    context_budget_chars: int = 24_000
+    context_history_max_chars: int = 10_000
+    context_web_max_chars: int = 5_000
+    context_digest_target_chars: int = 4_000
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -105,6 +105,7 @@ describe('Storyweave workspace', () => {
     const session: Session = { id: 's', threadId: 't', title: '元の題名', status: 'considering', archived: false, pinned: false, adoptionSummary: null }
     const updateSession = vi.fn().mockRejectedValue(new Error('failed'))
     const client: ApiClient = {
+      deleteProject: async () => {}, deleteThread: async () => {}, deleteSession: async () => {},
       getHealth: async () => ({ status: 'ok', database: 'ok', llm: 'unavailable', model: 'test' }),
       listProjects: async () => [project], createProject: async () => project,
       listThreads: async () => [thread], createThread: async () => thread,

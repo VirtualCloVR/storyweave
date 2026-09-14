@@ -77,7 +77,22 @@ export interface ContextInspectorData {
   excludedCounts: Record<'considering' | 'rejected' | 'superseded', number>
   confirmedContextChars: number
   currentHistoryChars: number
+  budgetChars?: number
+  totalChars?: number
+  mode?: string
+  includedCharacters?: ContextCharacter[]
+  excludedCharacters?: ContextCharacter[]
+  sceneFacts?: SceneFact[]
+  canon?: { digestStatus?: string; relevantSessions?: ContextSession[]; content?: string }
+  sizes?: Record<string, number>
+  compressionDegraded?: boolean
 }
+
+export interface CharacterFact { id?: string; key: string; value: string; sortOrder?: number }
+export interface Character { id: string; name: string; sourceTitle?: string | null; aliases: string[]; facts: CharacterFact[] }
+export interface ThreadCharacter { character: Character; alwaysInclude: boolean; sortOrder?: number }
+export interface SceneFact { id?: string; key: string; value: string; sortOrder?: number }
+export interface ContextCharacter { character: Character; reason?: string; facts?: CharacterFact[] }
 
 export interface SearchResult {
   id: string
@@ -96,7 +111,12 @@ export interface CreateInput {
   description?: string
 }
 
+export type WorkspaceItemKind = 'project' | 'thread' | 'session'
+
 export interface ApiClient {
+  deleteProject(id: string): Promise<void>
+  deleteThread(id: string): Promise<void>
+  deleteSession(id: string): Promise<void>
   getHealth(): Promise<HealthStatus>
   listProjects(): Promise<Project[]>
   createProject(input: CreateInput): Promise<Project>
@@ -111,4 +131,15 @@ export interface ApiClient {
   saveSummary(sessionId: string, summary: string): Promise<Session>
   getContext(sessionId: string): Promise<ContextInspectorData>
   search(query: string, filters?: Record<string, string>): Promise<SearchResult[]>
+}
+
+export interface StructuredContextApiClient {
+  listCharacters(): Promise<Character[]>
+  createCharacter(input: Pick<Character, 'name' | 'sourceTitle' | 'aliases' | 'facts'>): Promise<Character>
+  updateCharacter(id: string, input: Partial<Pick<Character, 'name' | 'sourceTitle' | 'aliases' | 'facts'>>): Promise<Character>
+  deleteCharacter(id: string): Promise<void>
+  getThreadCharacters(threadId: string): Promise<ThreadCharacter[]>
+  saveThreadCharacters(threadId: string, items: Array<{ characterId: string; alwaysInclude: boolean; sortOrder?: number }>): Promise<ThreadCharacter[]>
+  getSceneFacts(threadId: string): Promise<SceneFact[]>
+  saveSceneFacts(threadId: string, facts: SceneFact[]): Promise<SceneFact[]>
 }

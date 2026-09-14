@@ -1,4 +1,4 @@
-import type { ApiClient, ContextInspectorData, HealthStatus, Message, Project, SearchResult, Session, Source, Thread } from './types'
+import type { ApiClient, Character, CharacterFact, ContextInspectorData, HealthStatus, Message, Project, SceneFact, SearchResult, Session, Source, StructuredContextApiClient, Thread, ThreadCharacter } from './types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api'
 
@@ -8,6 +8,7 @@ async function request<T>(fetcher: typeof fetch, path: string, init?: RequestIni
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })
   if (!response.ok) throw new Error(`API ${response.status}: ${await response.text()}`)
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
@@ -38,6 +39,18 @@ function uniqueSources(values: Source[]): Source[] {
   return values.filter((source) => { const key = source.id ?? source.url; if (seen.has(key)) return false; seen.add(key); return true })
 }
 
+function characterFromPayload(value: unknown): Character {
+  const item = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  const factsValue = item.facts ?? item.characterFacts ?? []
+  const facts = Array.isArray(factsValue) ? factsValue.map((fact): CharacterFact => { const raw = (fact && typeof fact === 'object' ? fact : {}) as Record<string, unknown>; return { id: typeof raw.id === 'string' ? raw.id : undefined, key: String(raw.key ?? ''), value: String(raw.value ?? ''), sortOrder: Number(raw.sortOrder ?? raw.sort_order ?? 0) } }).filter((fact) => fact.key || fact.value) : []
+  const aliases = Array.isArray(item.aliases) ? item.aliases.map(String).filter(Boolean) : []
+  return { id: String(item.id ?? ''), name: String(item.name ?? ''), sourceTitle: typeof item.sourceTitle === 'string' ? item.sourceTitle : typeof item.source_title === 'string' ? item.source_title : null, aliases, facts }
+}
+
+function sceneFactFromPayload(value: unknown): SceneFact { const item = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>; return { id: typeof item.id === 'string' ? item.id : undefined, key: String(item.key ?? ''), value: String(item.value ?? ''), sortOrder: Number(item.sortOrder ?? item.sort_order ?? 0) } }
+function characterListPayload(value: unknown): Character[] { const items = Array.isArray(value) ? value : ((value as { characters?: unknown[] } | null)?.characters ?? []); return items.map(characterFromPayload) }
+function sceneListPayload(value: unknown): SceneFact[] { const items = Array.isArray(value) ? value : ((value as { facts?: unknown[]; sceneFacts?: unknown[] } | null)?.facts ?? (value as { sceneFacts?: unknown[] } | null)?.sceneFacts ?? []); return items.map(sceneFactFromPayload).filter((item) => item.key || item.value) }
+
 export class ChatStreamInterruptedError extends Error {
   constructor(message: string, readonly partialMessage: Message) {
     super(message)
@@ -45,7 +58,7 @@ export class ChatStreamInterruptedError extends Error {
   }
 }
 
-export function createApiClient(fetcher = fetch): ApiClient {
+export function createApiClient(fetcher = fetch): ApiClient & StructuredContextApiClient {
   const get = async <T>(path: string) => {
     const response = await fetcher(`${API_BASE}${path}`)
     if (!response.ok) throw new Error(`API ${response.status}`)
@@ -53,6 +66,9 @@ export function createApiClient(fetcher = fetch): ApiClient {
   }
   return {
     getHealth: () => get<HealthStatus>('/health'),
+    deleteProject: (id) => request<void>(fetcher, `/projects/${id}`, { method: 'DELETE' }),
+    deleteThread: (id) => request<void>(fetcher, `/threads/${id}`, { method: 'DELETE' }),
+    deleteSession: (id) => request<void>(fetcher, `/sessions/${id}`, { method: 'DELETE' }),
     listProjects: () => get<Project[]>('/projects'),
     createProject: (input) => request<Project>(fetcher, '/projects', json(input)),
     listThreads: (projectId) => get<Thread[]>(`/projects/${projectId}/threads`),
@@ -122,7 +138,21 @@ export function createApiClient(fetcher = fetch): ApiClient {
     },
     generateSummary: (sessionId) => request<{ summary: string }>(fetcher, `/sessions/${sessionId}/summary`, json({})),
     saveSummary: (sessionId, summary) => request<Session>(fetcher, `/sessions/${sessionId}/summary`, { method: 'PUT', body: JSON.stringify({ summary }) }),
-    getContext: (sessionId) => get<ContextInspectorData>(`/sessions/${sessionId}/context`),
+    getContext: async (sessionId) => {
+      const raw = await get<ContextInspectorData>(`/sessions/${sessionId}/context`)
+      const item = raw as ContextInspectorData & Record<string, unknown>
+      const normalizeContextCharacters = (value: unknown) => Array.isArray(value) ? value.map((entry) => { const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>; return { character: characterFromPayload(row.character ?? row), reason: typeof row.reason === 'string' ? row.reason : undefined, facts: Array.isArray(row.facts) ? row.facts.map((fact) => sceneFactFromPayload(fact)) : undefined } }) : undefined
+      const planned = Array.isArray(item.characters) ? item.characters as Array<Record<string, unknown>> : []
+      return { ...raw, budgetChars: Number(item.budgetChars ?? item.budget_chars ?? 0) || undefined, totalChars: Number(item.totalChars ?? item.total_chars ?? 0) || undefined, mode: typeof item.mode === 'string' ? item.mode : undefined, includedCharacters: normalizeContextCharacters(item.includedCharacters ?? item.included_characters ?? planned.filter((row) => row.included)), excludedCharacters: normalizeContextCharacters(item.excludedCharacters ?? item.excluded_characters ?? planned.filter((row) => !row.included)), sceneFacts: sceneListPayload(item.sceneFacts ?? item.scene_facts), canon: item.canon as ContextInspectorData['canon'], sizes: item.sizes as Record<string, number> | undefined, compressionDegraded: Boolean(item.compressionDegraded ?? item.compression_degraded) }
+    },
+    listCharacters: async () => characterListPayload(await get<unknown>('/characters')),
+    createCharacter: async (input) => characterFromPayload(await request<unknown>(fetcher, '/characters', json({ name: input.name, sourceTitle: input.sourceTitle, aliases: input.aliases, facts: input.facts }))),
+    updateCharacter: async (id, input) => characterFromPayload(await request<unknown>(fetcher, `/characters/${id}`, { method: 'PATCH', body: JSON.stringify(input) })),
+    deleteCharacter: async (id) => { await request<unknown>(fetcher, `/characters/${id}`, { method: 'DELETE' }) },
+    getThreadCharacters: async (threadId) => { const value = await get<unknown>(`/threads/${threadId}/characters`); const items = Array.isArray(value) ? value : ((value as { characters?: unknown[] } | null)?.characters ?? []); return items.map((entry) => { const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>; return { character: characterFromPayload(row.character ?? row), alwaysInclude: Boolean(row.alwaysInclude ?? row.always_include), sortOrder: Number(row.sortOrder ?? row.sort_order ?? 0) } }) },
+    saveThreadCharacters: async (threadId, items) => { const value = await request<unknown>(fetcher, `/threads/${threadId}/characters`, { method: 'PUT', body: JSON.stringify(items.map((item) => ({ characterId: item.characterId, alwaysInclude: item.alwaysInclude, sortOrder: item.sortOrder }))) }); const list = Array.isArray(value) ? value : ((value as { characters?: unknown[] } | null)?.characters ?? []); return list.map((entry) => { const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>; return { character: characterFromPayload(row.character ?? row), alwaysInclude: Boolean(row.alwaysInclude ?? row.always_include), sortOrder: Number(row.sortOrder ?? row.sort_order ?? 0) } }) },
+    getSceneFacts: async (threadId) => sceneListPayload(await get<unknown>(`/threads/${threadId}/scene-facts`)),
+    saveSceneFacts: async (threadId, facts) => sceneListPayload(await request<unknown>(fetcher, `/threads/${threadId}/scene-facts`, { method: 'PUT', body: JSON.stringify(facts.map((fact, index) => ({ key: fact.key, value: fact.value, sortOrder: index }))) })),
     search: (query, filters = {}) => get<SearchResult[]>(`/search?q=${encodeURIComponent(query)}&${new URLSearchParams(filters)}`),
   }
 }

@@ -5,15 +5,18 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, joinedload, selectinload, sessionmaker
 from . import llm
-from .context_builder import adopted_sessions_for_context, build_system_context
+from .context_builder import adopted_sessions_for_context
+from .context_planner import ContextPlan, build_context_plan
 from .db import get_db
-from .models import Message, Project, Source, StorySession, Thread
+from .models import Character, CharacterFact, Message, Project, Source, StorySession, Thread, ThreadCharacter, ThreadContextDigest, ThreadSceneFact
 from .schemas import (
-    ChatIn, MessageOut, MessageWithSourcesOut, ProjectCreate, ProjectOut, ProjectUpdate, SearchResult,
+    CharacterCreate, CharacterFactOut, CharacterOut, CharacterUpdate, ChatIn, ContextCharacterOut,
+    ContextPreviewIn, FactIn, MessageOut, MessageWithSourcesOut, ProjectCreate, ProjectOut, ProjectUpdate, SearchResult,
     SessionCreate, SessionOut, SessionUpdate, SourceCreate, SourceOut, SummaryIn,
-    SummaryOut, ThreadCreate, ThreadOut, ThreadUpdate, WebFetchIn, WebSearchIn, ContextInspectorOut, ContextSessionOut,
+    SummaryOut, ThreadCharacterIn, ThreadCharacterOut, ThreadCreate, ThreadOut, ThreadSceneFactOut, ThreadUpdate,
+    WebFetchIn, WebSearchIn, ContextCanonOut, ContextInspectorOut, ContextSessionOut,
 )
 from .tools import FetchResult
 from .web import fetch_one, format_source_context, persist_source, search_and_fetch
@@ -65,6 +68,55 @@ def recent_history(items: list[Message], max_chars: int = 20_000) -> list[Messag
         selected.append(item)
         used += size
     return list(reversed(selected))
+
+def clean_character_values(payload: CharacterCreate | CharacterUpdate) -> dict:
+    values = payload.model_dump(exclude_unset=True)
+    if "name" in values:
+        values["name"] = values["name"].strip()
+        if not values["name"]:
+            raise HTTPException(status_code=422, detail="Character name cannot be blank")
+    if "source_title" in values and values["source_title"] is not None:
+        values["source_title"] = values["source_title"].strip() or None
+    if "aliases" in values and values["aliases"] is not None:
+        aliases: list[str] = []
+        for raw in values["aliases"]:
+            alias = raw.strip()
+            if not alias:
+                continue
+            if len(alias) > 120:
+                raise HTTPException(status_code=422, detail="Character alias must be at most 120 characters")
+            if alias not in aliases:
+                aliases.append(alias)
+        values["aliases"] = aliases
+    return values
+
+def clean_facts(facts: list[FactIn]) -> list[dict]:
+    cleaned: list[dict] = []
+    for index, fact in enumerate(facts):
+        key, value = fact.key.strip(), fact.value.strip()
+        if not key or not value:
+            raise HTTPException(status_code=422, detail="Fact key and value cannot be blank")
+        cleaned.append({"key": key, "value": value, "sort_order": fact.sort_order if "sort_order" in fact.model_fields_set else index})
+    return cleaned
+
+def character_out(item: Character) -> CharacterOut:
+    return CharacterOut.model_validate(item)
+
+def inspector_out(db: Session, current: StorySession, plan: ContextPlan, history: list[Message]) -> ContextInspectorOut:
+    thread = require(db, Thread, current.thread_id)
+    project = require(db, Project, thread.project_id)
+    counts = {status: db.scalar(select(func.count(StorySession.id)).where(StorySession.thread_id == thread.id, StorySession.id != current.id, StorySession.status == status)) or 0 for status in ("considering", "rejected", "superseded")}
+    adopted_out = [ContextSessionOut(id=item.id, title=item.title, summary=(item.adoption_summary or "").strip(), archived=item.archived) for item in plan.adopted_sessions]
+    relevant_out = [ContextSessionOut(id=item.id, title=item.title, summary=(item.adoption_summary or "").strip(), archived=item.archived) for item in plan.relevant_sessions]
+    characters = [ContextCharacterOut(id=item.id, name=item.name, included=item.included, reason=item.reason, facts=[FactIn(key=key, value=value, sort_order=order) for key, value, order in item.facts]) for item in plan.characters]
+    return ContextInspectorOut(
+        project=project, thread=thread, current_session=session_out(db, current), adopted_sessions=adopted_out,
+        excluded_counts=counts, confirmed_context_chars=len(plan.canon_text), current_history_chars=sum(len(item.content) for item in history),
+        budget_chars=plan.budget_chars, total_chars=plan.total_chars, mode=plan.compression_mode, characters=characters,
+        scene_facts=[FactIn(key=key, value=value, sort_order=order) for key, value, order in plan.scene_facts],
+        canon=ContextCanonOut(digest_status=plan.digest_status, relevant_sessions=relevant_out), sizes=plan.sizes,
+        compression_degraded=plan.compression_degraded,
+    )
 
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, str]:
@@ -131,6 +183,84 @@ def delete_thread(thread_id: str, db: Session = Depends(get_db)):
     db.delete(require(db, Thread, thread_id)); db.commit()
     return Response(status_code=204)
 
+@router.get("/characters", response_model=list[CharacterOut])
+def list_characters(db: Session = Depends(get_db)):
+    return list(db.scalars(select(Character).options(selectinload(Character.facts)).order_by(Character.updated_at.desc(), Character.name)))
+
+@router.post("/characters", response_model=CharacterOut, status_code=201)
+def create_character(payload: CharacterCreate, db: Session = Depends(get_db)):
+    values = clean_character_values(payload)
+    facts = clean_facts(payload.facts)
+    values.pop("facts", None)
+    item = Character(**values)
+    item.facts = [CharacterFact(**fact) for fact in facts]
+    db.add(item); db.commit(); db.refresh(item)
+    return character_out(item)
+
+@router.get("/characters/{character_id}", response_model=CharacterOut)
+def get_character(character_id: str, db: Session = Depends(get_db)):
+    item = db.scalar(select(Character).where(Character.id == character_id).options(selectinload(Character.facts)))
+    if item is None:
+        raise HTTPException(status_code=404, detail="Character not found")
+    return character_out(item)
+
+@router.patch("/characters/{character_id}", response_model=CharacterOut)
+def update_character(character_id: str, payload: CharacterUpdate, db: Session = Depends(get_db)):
+    item = require(db, Character, character_id)
+    values = clean_character_values(payload)
+    values.pop("facts", None)
+    for key, value in values.items():
+        setattr(item, key, value)
+    if payload.facts is not None:
+        facts = clean_facts(payload.facts)
+        item.facts.clear()
+        item.facts.extend(CharacterFact(**fact) for fact in facts)
+    db.commit(); db.refresh(item)
+    return character_out(item)
+
+@router.delete("/characters/{character_id}", status_code=204)
+def delete_character(character_id: str, db: Session = Depends(get_db)):
+    db.delete(require(db, Character, character_id)); db.commit()
+    return Response(status_code=204)
+
+@router.get("/threads/{thread_id}/characters", response_model=list[ThreadCharacterOut])
+def list_thread_characters(thread_id: str, db: Session = Depends(get_db)):
+    require(db, Thread, thread_id)
+    links = db.execute(select(ThreadCharacter).where(ThreadCharacter.thread_id == thread_id).options(joinedload(ThreadCharacter.character).joinedload(Character.facts)).order_by(ThreadCharacter.sort_order, ThreadCharacter.character_id)).unique().scalars()
+    return [ThreadCharacterOut(character=character_out(link.character), always_include=link.always_include, sort_order=link.sort_order) for link in links]
+
+@router.put("/threads/{thread_id}/characters", response_model=list[ThreadCharacterOut])
+def replace_thread_characters(thread_id: str, payload: list[ThreadCharacterIn], db: Session = Depends(get_db)):
+    require(db, Thread, thread_id)
+    ids = [item.character_id for item in payload]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=422, detail="Character can only appear once in a Thread Cast")
+    found = set(db.scalars(select(Character.id).where(Character.id.in_(ids)))) if ids else set()
+    if found != set(ids):
+        raise HTTPException(status_code=422, detail="One or more Characters do not exist")
+    for link in list(db.scalars(select(ThreadCharacter).where(ThreadCharacter.thread_id == thread_id))):
+        db.delete(link)
+    db.flush()
+    db.add_all(ThreadCharacter(thread_id=thread_id, **item.model_dump()) for item in payload)
+    db.commit()
+    return list_thread_characters(thread_id, db)
+
+@router.get("/threads/{thread_id}/scene-facts", response_model=list[ThreadSceneFactOut])
+def list_scene_facts(thread_id: str, db: Session = Depends(get_db)):
+    require(db, Thread, thread_id)
+    return list(db.scalars(select(ThreadSceneFact).where(ThreadSceneFact.thread_id == thread_id).order_by(ThreadSceneFact.sort_order, ThreadSceneFact.id)))
+
+@router.put("/threads/{thread_id}/scene-facts", response_model=list[ThreadSceneFactOut])
+def replace_scene_facts(thread_id: str, payload: list[FactIn], db: Session = Depends(get_db)):
+    require(db, Thread, thread_id)
+    facts = clean_facts(payload)
+    for fact in list(db.scalars(select(ThreadSceneFact).where(ThreadSceneFact.thread_id == thread_id))):
+        db.delete(fact)
+    db.flush()
+    db.add_all(ThreadSceneFact(thread_id=thread_id, **fact) for fact in facts)
+    db.commit()
+    return list_scene_facts(thread_id, db)
+
 @router.get("/threads/{thread_id}/sessions", response_model=list[SessionOut])
 def list_sessions(thread_id: str, db: Session = Depends(get_db)):
     require(db, Thread, thread_id)
@@ -163,7 +293,14 @@ def update_session(session_id: str, payload: SessionUpdate, db: Session = Depend
 
 @router.delete("/sessions/{session_id}", status_code=204)
 def delete_session(session_id: str, db: Session = Depends(get_db)):
-    db.delete(require(db, StorySession, session_id)); db.commit()
+    item = require(db, StorySession, session_id)
+    # A digest is keyed by Thread, so deleting an adopted source Session must
+    # invalidate it before the source hash can be reused by a later chat.
+    if item.status == "adopted":
+        digest = db.get(ThreadContextDigest, item.thread_id)
+        if digest is not None:
+            db.delete(digest)
+    db.delete(item); db.commit()
     return Response(status_code=204)
 
 @router.get("/sessions/{session_id}/messages", response_model=list[MessageWithSourcesOut])
@@ -191,13 +328,11 @@ async def chat(session_id: str, payload: ChatIn, db: Session = Depends(get_db)):
     if (search_queries or fetch_urls) and not web_sources:
         raise HTTPException(status_code=502, detail="Web検索結果の本文を取得できませんでした。検索語を変えて再試行してください。")
     history = list(db.scalars(select(Message).where(Message.session_id == session_id).order_by(Message.created_at, Message.id)))
+    plan = await build_context_plan(db, current, payload.content, history, web_sources)
     user_message = Message(session_id=session_id, role="user", content=payload.content)
     db.add(user_message); db.commit()
-    prompt = [{"role": "system", "content": build_system_context(db, current)}]
-    source_context = format_source_context(web_sources)
-    if source_context:
-        prompt[0]["content"] += "\n\n" + source_context
-    prompt.extend({"role": item.role.value if hasattr(item.role, "value") else str(item.role), "content": item.content} for item in recent_history(history))
+    prompt = [{"role": "system", "content": plan.system_text}]
+    prompt.extend({"role": item.role.value if hasattr(item.role, "value") else str(item.role), "content": item.content} for item in plan.history)
     prompt.append({"role": "user", "content": payload.content})
     stream_session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
 
@@ -291,14 +426,20 @@ def save_summary(session_id: str, payload: SummaryIn, db: Session = Depends(get_
     return session_out(db, current)
 
 @router.get("/sessions/{session_id}/context", response_model=ContextInspectorOut)
-def context_inspector(session_id: str, db: Session = Depends(get_db)):
+async def context_inspector(session_id: str, db: Session = Depends(get_db)):
     current = require(db, StorySession, session_id)
-    thread = require(db, Thread, current.thread_id); project = require(db, Project, thread.project_id)
-    adopted = adopted_sessions_for_context(db, current)
-    counts = {status: db.scalar(select(func.count(StorySession.id)).where(StorySession.thread_id == thread.id, StorySession.id != current.id, StorySession.status == status)) or 0 for status in ("considering", "rejected", "superseded")}
-    confirmed = "\n\n".join(f"[{s.title}]\n{s.adoption_summary.strip()}" for s in adopted)
-    history = list(db.scalars(select(Message).where(Message.session_id == current.id)))
-    return ContextInspectorOut(project=project, thread=thread, current_session=session_out(db,current), adopted_sessions=[ContextSessionOut(id=s.id,title=s.title,summary=s.adoption_summary.strip(),archived=s.archived) for s in adopted], excluded_counts=counts, confirmed_context_chars=len(confirmed), current_history_chars=sum(len(m.content) for m in history))
+    history = list(db.scalars(select(Message).where(Message.session_id == current.id).order_by(Message.created_at, Message.id)))
+    latest_user = next((item for item in reversed(history) if (item.role.value if hasattr(item.role, "value") else str(item.role)) == "user"), None)
+    planning_history = [item for item in history if item is not latest_user]
+    plan = await build_context_plan(db, current, latest_user.content if latest_user else "", planning_history)
+    return inspector_out(db, current, plan, history)
+
+@router.post("/sessions/{session_id}/context/preview", response_model=ContextInspectorOut)
+async def context_preview(session_id: str, payload: ContextPreviewIn, db: Session = Depends(get_db)):
+    current = require(db, StorySession, session_id)
+    history = list(db.scalars(select(Message).where(Message.session_id == current.id).order_by(Message.created_at, Message.id)))
+    plan = await build_context_plan(db, current, payload.content, history)
+    return inspector_out(db, current, plan, history)
 
 @router.get("/sessions/{session_id}/sources", response_model=list[SourceOut])
 def list_sources(session_id: str, db: Session = Depends(get_db)):

@@ -39,6 +39,54 @@ class ThreadOut(ThreadCreate):
     created_at: datetime
     updated_at: datetime
 
+class FactIn(ApiModel):
+    key: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=2000)
+    sort_order: int = Field(default=0, ge=0, le=100_000)
+
+class CharacterFactOut(FactIn):
+    id: str
+    character_id: str
+    created_at: datetime
+    updated_at: datetime
+
+class CharacterCreate(ApiModel):
+    name: str = Field(min_length=1, max_length=240)
+    source_title: str | None = Field(default=None, max_length=500)
+    aliases: list[str] = Field(default_factory=list, max_length=50)
+    facts: list[FactIn] = Field(default_factory=list, max_length=200)
+
+class CharacterUpdate(ApiModel):
+    name: str | None = Field(default=None, min_length=1, max_length=240)
+    source_title: str | None = Field(default=None, max_length=500)
+    aliases: list[str] | None = Field(default=None, max_length=50)
+    facts: list[FactIn] | None = Field(default=None, max_length=200)
+
+class CharacterOut(ApiModel):
+    id: str
+    name: str
+    source_title: str | None
+    aliases: list[str]
+    facts: list[CharacterFactOut]
+    created_at: datetime
+    updated_at: datetime
+
+class ThreadCharacterIn(ApiModel):
+    character_id: str
+    always_include: bool = False
+    sort_order: int = Field(default=0, ge=0, le=100_000)
+
+class ThreadCharacterOut(ApiModel):
+    character: CharacterOut
+    always_include: bool
+    sort_order: int
+
+class ThreadSceneFactOut(FactIn):
+    id: str
+    thread_id: str
+    created_at: datetime
+    updated_at: datetime
+
 class SessionCreate(ApiModel):
     title: str = Field(min_length=1, max_length=240)
     status: SessionStatus = SessionStatus.considering
@@ -70,6 +118,17 @@ class ContextSessionOut(ApiModel):
     summary: str
     archived: bool
 
+class ContextCharacterOut(ApiModel):
+    id: str
+    name: str
+    included: bool
+    reason: Literal["always_include", "mentioned"] | None = None
+    facts: list[FactIn]
+
+class ContextCanonOut(ApiModel):
+    digest_status: Literal["fresh", "stale", "unused", "generated", "failed"]
+    relevant_sessions: list[ContextSessionOut]
+
 class ContextInspectorOut(ApiModel):
     project: ProjectOut
     thread: ThreadOut
@@ -78,6 +137,14 @@ class ContextInspectorOut(ApiModel):
     excluded_counts: dict[str, int]
     confirmed_context_chars: int
     current_history_chars: int
+    budget_chars: int
+    total_chars: int
+    mode: Literal["full", "digest"]
+    characters: list[ContextCharacterOut]
+    scene_facts: list[FactIn]
+    canon: ContextCanonOut
+    sizes: dict[str, int]
+    compression_degraded: bool
 
 class MessageCreate(ApiModel):
     role: MessageRole
@@ -94,6 +161,9 @@ class ChatIn(ApiModel):
     content: str = Field(min_length=1)
     web_search_queries: list[str] = Field(default_factory=list, max_length=5)
     fetch_urls: list[str] = Field(default_factory=list, max_length=5)
+
+class ContextPreviewIn(ApiModel):
+    content: str = Field(min_length=1, max_length=20_000)
 
 class SummaryIn(ApiModel):
     summary: str
