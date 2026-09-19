@@ -40,3 +40,6 @@ Thumbs.db
 *.log
 postgres-data/
 docker-data/
+
+# Private operation notes (not distributed)
+docs/

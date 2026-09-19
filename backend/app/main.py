@@ -5,32 +5,25 @@ from sqlalchemy import select
 from .api import router
 from .config import settings
 from .db import SessionLocal
-from .models import Character, CharacterFact, Project, StorySession, Thread, ThreadCharacter, ThreadSceneFact
+from .models import Project, StorySession, Thread
+
 
 def seed() -> None:
+    """Create a minimal offline sample when explicitly enabled.
+
+    Only runs when SEED_ENABLED is true and the database is empty.
+    Sample: Project "MyGO ワンライト" / Thread "愛音事故SS" /
+    Session "交通事故描写の検討" (considering).
+    """
     if not settings.seed_enabled:
         return
     with SessionLocal() as db:
         if db.scalar(select(Project.id).limit(1)):
             return
-        project = Project(title="MyGO ワンライト", description="Development seed")
+        project = Project(title="MyGO ワンライト", description="Sample workspace")
         thread = Thread(title="愛音事故SS", project=project)
         thread.sessions = [
-            StorySession(title="事故要素を入れるとして現実的な事故と表現", status="adopted", adoption_summary="- 愛音は自転車で事故に遭う\n- 意識は失わない"),
-            StorySession(title="燈が事故を知る流れ", status="considering"),
-            StorySession(title="記憶喪失案", status="rejected"),
-        ]
-        anon = Character(name="千早愛音", source_title="BanG Dream! It's MyGO!!!!!", aliases=["愛音", "あのんちゃん"])
-        anon.facts = [
-            CharacterFact(key="身長", value="160cm", sort_order=0),
-            CharacterFact(key="誕生日", value="9/8", sort_order=1),
-            CharacterFact(key="学年", value="高等部1年A組", sort_order=2),
-        ]
-        thread.characters = [ThreadCharacter(character=anon, always_include=False, sort_order=0)]
-        thread.scene_facts = [
-            ThreadSceneFact(key="舞台", value="無人島", sort_order=0),
-            ThreadSceneFact(key="半球", value="北半球", sort_order=1),
-            ThreadSceneFact(key="季節", value="夏", sort_order=2),
+            StorySession(title="交通事故描写の検討", status="considering"),
         ]
         db.add(project); db.commit()
 

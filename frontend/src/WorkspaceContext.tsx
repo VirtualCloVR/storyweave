@@ -43,7 +43,7 @@ export function WorkspaceProvider({ children, client = api, sync = shouldSync }:
   const [messageMap, setMessageMap] = useState<Record<string, Message[]>>(sync ? {} : seedMessages)
   const [projectId, setProjectId] = useState(sync ? '' : seedProjects[0].id)
   const [threadId, setThreadId] = useState(sync ? '' : seedThreads[0].id)
-  const [sessionId, setSessionId] = useState(sync ? '' : seedSessions[2].id)
+  const [sessionId, setSessionId] = useState(sync ? '' : seedSessions[0].id)
   const [generatingSessionId, setGeneratingSessionId] = useState('')
   const [connectionError, setConnectionError] = useState<string>()
   const [health, setHealth] = useState<HealthStatus | undefined>(sync ? undefined : { status: 'ok', database: 'ok', llm: 'unavailable', model: 'offline-preview' })

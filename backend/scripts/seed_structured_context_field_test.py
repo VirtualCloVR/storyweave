@@ -1,7 +1,9 @@
 """Idempotently seed the v0.2 structured-context field-test fixtures.
 
+Local development helper. Not required for normal installs.
 This script intentionally uses only the Python standard library so it can be
 run from a plain Python installation on the machine hosting Storyweave.
+Set --api-base or STORYWEAVE_API to point at your backend.
 """
 import argparse
 import json

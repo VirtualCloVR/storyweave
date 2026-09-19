@@ -1,4 +1,8 @@
-"""Verify live OpenAI-compatible streaming and message persistence."""
+"""Verify live OpenAI-compatible streaming and message persistence.
+
+Local development helper. Requires a running backend and LLM endpoint.
+Set STORYWEAVE_API to point at your backend (default http://localhost:8000/api).
+"""
 import json
 import os
 import httpx

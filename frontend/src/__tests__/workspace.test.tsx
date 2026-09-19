@@ -13,7 +13,7 @@ describe('Storyweave workspace', () => {
   it('renders the three-pane workspace with the current session', () => {
     render(<WorkspaceProvider><App /></WorkspaceProvider>)
     expect(screen.getAllByText('storyweave').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('病院での会話').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('交通事故描写の検討').length).toBeGreaterThan(0)
     expect(screen.getByPlaceholderText('このSessionについて相談する…')).toBeInTheDocument()
   })
 
@@ -22,8 +22,8 @@ describe('Storyweave workspace', () => {
     render(<WorkspaceProvider><App /></WorkspaceProvider>)
     await user.click(screen.getByRole('button', { name: '検索' }))
     const input = screen.getByPlaceholderText('Project、Thread、Sessionを検索…')
-    await user.type(input, '記憶')
-    expect(screen.getByText('記憶喪失案')).toBeInTheDocument()
+    await user.type(input, '交通事故')
+    expect(screen.getAllByText('交通事故描写の検討').length).toBeGreaterThan(0)
   })
 
   it('opens the adoption summary flow instead of directly adopting', async () => {
@@ -44,9 +44,9 @@ describe('Storyweave workspace', () => {
     await user.type(screen.getByPlaceholderText('Projectの名前'), '空のProject')
     await user.click(screen.getByRole('button', { name: 'Projectを作成' }))
     expect(screen.getByText('Sessionを選択してください')).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '病院での会話' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '交通事故描写の検討' })).not.toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: 'MyGO ワンライト' })[0])
-    expect(screen.getByRole('heading', { name: '事故要素を入れるとして現実的な事故と表現' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '交通事故描写の検討' })).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: '空のProject' })[0])
     expect(screen.getByText('Sessionを選択してください')).toBeInTheDocument()
   })
@@ -59,7 +59,7 @@ describe('Storyweave workspace', () => {
     await user.click(screen.getByRole('button', { name: 'Threadを作成' }))
     expect(screen.getByText('Sessionを選択してください')).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: /愛音事故SS/ })[0])
-    expect(screen.getByRole('heading', { name: '事故要素を入れるとして現実的な事故と表現' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '交通事故描写の検討' })).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: /空のThread/ })[0])
     expect(screen.getByText('Sessionを選択してください')).toBeInTheDocument()
   })
@@ -69,8 +69,8 @@ describe('Storyweave workspace', () => {
     render(<WorkspaceProvider><App /></WorkspaceProvider>)
     await user.click(screen.getByRole('button', { name: '検索' }))
     await user.type(screen.getByPlaceholderText('Project、Thread、Sessionを検索…'), '説明的')
-    await user.click(screen.getByRole('button', { name: /message.*病院での会話/i }))
-    expect(screen.getByRole('heading', { name: '病院での会話' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /message.*交通事故描写の検討/i }))
+    expect(screen.getByRole('heading', { name: '交通事故描写の検討' })).toBeInTheDocument()
   })
 
   it('shows the confirmed context inspector', async () => {
@@ -78,8 +78,8 @@ describe('Storyweave workspace', () => {
     render(<WorkspaceProvider><App /></WorkspaceProvider>)
     await user.click(screen.getByRole('button', { name: /採用済みSession.*内容を見る/ }))
     const dialog = await screen.findByRole('dialog', { name: '引き継がれる前提' })
-    expect(within(dialog).getByText('事故要素を入れるとして現実的な事故と表現')).toBeInTheDocument()
-    expect(within(dialog).getByText(/自動Contextから除外/)).toHaveTextContent('検討中 0 / 没 1 / 差し替え済み 1')
+    expect(within(dialog).getByText('交通事故描写の検討')).toBeInTheDocument()
+    expect(within(dialog).getByText(/自動Contextから除外/)).toHaveTextContent('検討中 0 / 没 0 / 差し替え済み 0')
   })
 
   it('supports keyboard search selection and keeps source display', async () => {
@@ -88,8 +88,8 @@ describe('Storyweave workspace', () => {
     expect(screen.getByText('参照ソース')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '検索' }))
     const input = screen.getByPlaceholderText('Project、Thread、Sessionを検索…')
-    await user.type(input, '記憶{Enter}')
-    expect(screen.getByRole('heading', { name: '記憶喪失案' })).toBeInTheDocument()
+    await user.type(input, '交通事故{Enter}')
+    expect(screen.getByRole('heading', { name: '交通事故描写の検討' })).toBeInTheDocument()
   })
 
   it('opens the existing mobile drawer', async () => {

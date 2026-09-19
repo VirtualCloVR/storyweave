@@ -13,10 +13,11 @@ class Settings(BaseSettings):
     url_fetch_max_bytes: int = 2_000_000
     web_search_endpoint: str = "https://html.duckduckgo.com/html/"
     web_retrieval_provider: str = "auto"
-    mcp_search_command: str = "/home/bap4/mcp-searxng/.venv/bin/python"
-    mcp_search_server_path: str = "/home/bap4/mcp-searxng/server.py"
+    mcp_search_command: str = "/usr/local/bin/python"
+    mcp_search_server_path: str = "/opt/mcp-searxng/server.py"
     mcp_search_timeout_seconds: float = 20
     mcp_fetch_max_chars: int = 8000
+    searxng_url: str = ""
     llm_timeout_seconds: float = 180
     context_budget_chars: int = 24_000
     context_history_max_chars: int = 10_000
