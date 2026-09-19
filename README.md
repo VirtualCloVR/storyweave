@@ -238,6 +238,18 @@ Copyright (c) 2026 Virtual CloVR
 
 サンプルseed内の作品名等 (`MyGO ワンライト`等) は動作確認用の例示であり、各権利者に帰属します。
 
+### Third-Party Licenses
+
+本プロジェクト本体はMIT Licenseですが、依存ライブラリにMITより強いライセンスが含まれます。
+
+| パッケージ | ライセンス | 備考 |
+| --- | --- | --- |
+| `psycopg` / `psycopg-binary` (Backend DBドライバ) | LGPL-3.0-only | SQLAlchemy経由の通常利用ではアプリ本体のMIT配布に影響しません。psycopg自体を改変した場合は改変分の開示が必要です |
+| `certifi` (httpx/requests経由) | MPL-2.0 | ファイル単位の弱いcopyleftで、アプリコードへの波及はありません |
+| `lightningcss` (Vite経由、ビルド時のみ) | MPL-2.0 | ビルドツールとしての利用のみで、配布物にコードは含まれません |
+
+その他の直接・推移的依存はMIT / BSD / Apache-2.0 / PSF等のpermissiveライセンスです。各パッケージの詳細は`backend`のインストール済みメタデータおよび`frontend/node_modules/*/package.json`の`license`表記を参照してください。
+
 ## 運用メモ
 
 個人のLAN/VPN利用を想定した開発用構成です。実運用のバックアップ、PostgreSQLの更新、LLMモデルのライセンス、ネットワークのアクセス権は利用環境の責任範囲で管理してください。
